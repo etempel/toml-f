@@ -14,7 +14,7 @@
 module tftest_parser
    use testdrive
    use tomlf_build, only : get_value
-   use tomlf_constants, only : nl => TOML_NEWLINE, tfi
+   use tomlf_constants, only : nl => TOML_NEWLINE, tfi, tfr
    use tomlf_de, only : toml_loads
    use tomlf_de_lexer, only : toml_lexer, new_lexer_from_string, toml_token, token_kind
    use tomlf_de_parser
@@ -87,7 +87,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("parse-multiline-string", parse_multiline_string), &
       & new_unittest("parse-multiline-string-blank-lines", parse_multiline_string_blank_lines), &
       & new_unittest("empty", empty), &
-      & new_unittest("integer-out-of-range", integer_out_of_range)]
+      & new_unittest("integer-out-of-range", integer_out_of_range), &
+      & new_unittest("float-out-of-range", float_out_of_range)]
 
 end subroutine collect_parser
 
@@ -813,5 +814,42 @@ subroutine integer_out_of_range(error)
    call get_value(table, "f", val, stat=stat)
    call check(error, stat == 0 .and. val == 1, "leading zeros of a hex literal must not count")
 end subroutine integer_out_of_range
+
+!> A finite float beyond the largest double is refused; an underflow reads as a signed zero
+subroutine float_out_of_range(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: refused(5) = [character(40) :: &
+      & "x = 1e309", "x = -1e309", "x = 1.7976931348623159e308", "x = 1e99999", &
+      & "x = 1_000e306"]
+   type(toml_table), allocatable :: table
+   real(tfr) :: val
+   integer :: it, stat
+
+   do it = 1, size(refused)
+      call check_refused(error, trim(refused(it)), trim(refused(it)))
+      if (allocated(error)) return
+   end do
+   call check_loads(error, "a = 1.7976931348623157e308"//nl//"b = 1e-400"//nl// &
+      & "c = -1e-400"//nl//"d = inf"//nl//"e = 0e99999"//nl, "floats in range", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == huge(val), "the largest double must read back")
+   if (allocated(error)) return
+   call get_value(table, "b", val, stat=stat)
+   call check(error, stat == 0 .and. val == 0.0_tfr, "an underflow must read as zero")
+   if (allocated(error)) return
+   call get_value(table, "c", val, stat=stat)
+   ! The sign bit, since sign(1.0, -0.0) is processor-dependent (ifx answers +1)
+   call check(error, stat == 0 .and. val == 0.0_tfr .and. transfer(val, 1_tfi) < 0_tfi, &
+      & "a negative underflow must read as -0")
+   if (allocated(error)) return
+   call get_value(table, "d", val, stat=stat)
+   call check(error, stat == 0 .and. val > huge(val), "inf must read as an infinity")
+   if (allocated(error)) return
+   call get_value(table, "e", val, stat=stat)
+   call check(error, stat == 0 .and. val == 0.0_tfr, "a zero significand must read as zero")
+end subroutine float_out_of_range
 
 end module tftest_parser

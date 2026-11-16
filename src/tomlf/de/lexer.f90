@@ -857,6 +857,8 @@ subroutine next_float(lexer, token)
    end do
 
    okay = .not.underscore .and. (expo .or. point)
+   ! A finite text that would read as an infinity is an error, as an integer out of range is
+   if (okay) okay = float_fits(lexer%chunk(prev:pos-1))
    token = toml_token(merge(token_kind%float, token_kind%invalid, okay), prev, pos-1)
 end subroutine next_float
 
@@ -1344,6 +1346,69 @@ pure function integer_fits(text) result(fits)
    end if
 end function integer_fits
 
+!> Whether a finite float token's text reads as a finite double. Its value is read as
+!> extract_float reads it; a read that fails is an overflow when the value is at least 1,
+!> since only a value below the smallest double can then have failed (an underflow, which
+!> reads as zero), and one that succeeds must not have given an infinity.
+function float_fits(text) result(fits)
+   !> Text of the float token, with a sign, digits, a point or an exponent, and underscores
+   character(*, tfc), intent(in) :: text
+   !> Whether the value rounds to a finite double
+   logical :: fits
+
+   character(len(text), tfc) :: buffer
+   real(tfr) :: val
+   integer :: it, ic, read_stat, mag, expo, sgn
+   logical :: point, nonzero, in_expo
+   character(1, tfc) :: ch
+
+   ic = 0
+   do it = 1, len(text)
+      if (text(it:it) == "_") cycle
+      ic = ic + 1
+      buffer(ic:ic) = text(it:it)
+   end do
+   read(buffer(:ic), *, iostat=read_stat) val
+   if (read_stat == 0) then
+      fits = abs(val) <= huge(val)
+      return
+   end if
+
+   ! The decimal exponent of the leading significant digit, mag + expo, decides whether
+   ! the value is at least 1
+   mag = 0
+   expo = 0
+   sgn = 1
+   point = .false.
+   nonzero = .false.
+   in_expo = .false.
+   do it = 1, ic
+      ch = buffer(it:it)
+      if (in_expo) then
+         if (ch == "-") sgn = -1
+         if (verify(ch, "0123456789") == 0 .and. expo < 100000) &
+            & expo = 10*expo + (iachar(ch) - iachar("0"))
+         cycle
+      end if
+      select case(ch)
+      case(".")
+         point = .true.
+      case("e", "E")
+         in_expo = .true.
+      case("1":"9")
+         if (.not.nonzero .and. point) mag = mag - 1
+         if (nonzero .and. .not.point) mag = mag + 1
+         nonzero = .true.
+      case("0")
+         if (nonzero .and. .not.point) mag = mag + 1
+         if (.not.nonzero .and. point) mag = mag - 1
+      case default
+      end select
+   end do
+   ! A zero significand is zero whatever its exponent
+   fits = .not.nonzero .or. mag + sgn*expo < 0
+end function float_fits
+
 !> Extract integer value of token
 subroutine extract_integer(lexer, token, val)
    !> Instance of the lexer
@@ -1505,7 +1570,11 @@ subroutine extract_float(lexer, token, val)
    end do
 
    read(buffer(:ic), *, iostat=read_stat) val
-   if (read_stat /= 0) val = 0.0_tfr
+   ! float_fits refused every text that overflows, so a read that fails here underflowed
+   if (read_stat /= 0) then
+      val = 0.0_tfr
+      if (match(lexer, token%first, char_kind%minus)) val = -val
+   end if
 end subroutine extract_float
 
 !> Extract boolean value of token
