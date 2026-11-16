@@ -1717,9 +1717,10 @@ function verify_ucs(escape) result(valid)
 
    code = hex_to_int(escape)
 
-   valid = code >= 0_tfi .and. code < int(z"7FFFFFFF", tfi) &
-      & .and. (code < int(z"d800", tfi) .or. code > int(z"dfff", tfi)) &
-      & .and. (code < int(z"fffe", tfi) .or. code > int(z"ffff", tfi))
+   ! The Unicode scalar values: 0 to 10FFFF less the surrogates D800 to DFFF.
+   ! FFFE and FFFF are noncharacters, but scalar values all the same.
+   valid = code >= 0_tfi .and. code <= int(z"10FFFF", tfi) &
+      & .and. (code < int(z"d800", tfi) .or. code > int(z"dfff", tfi))
 end function verify_ucs
 
 

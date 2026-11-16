@@ -89,7 +89,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("empty", empty), &
       & new_unittest("integer-out-of-range", integer_out_of_range), &
       & new_unittest("float-out-of-range", float_out_of_range), &
-      & new_unittest("multiline-unicode-escape", multiline_unicode_escape)]
+      & new_unittest("multiline-unicode-escape", multiline_unicode_escape), &
+      & new_unittest("unicode-scalar-values", unicode_scalar_values)]
 
 end subroutine collect_parser
 
@@ -883,5 +884,26 @@ subroutine multiline_unicode_escape(error)
    if (allocated(error)) return
    call check_refused(error, 'x = """'//bs//'ud800"""', "a surrogate in a multi-line string")
 end subroutine multiline_unicode_escape
+
+!> An escape names exactly a Unicode scalar value. Each backslash is achar(92).
+subroutine unicode_scalar_values(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: bs = achar(92)
+   type(toml_table), allocatable :: table
+   character(:), allocatable :: val
+   integer :: stat
+
+   call check_loads(error, 'a = "'//bs//'uFFFF"'//nl//'b = "'//bs//'ufffe"'//nl//'c = "'//bs//'U0010FFFF"'//nl// &
+      & '"'//bs//'uFFFF" = 1'//nl//'d = """'//bs//'uFFFFx"""'//nl, "noncharacters and the last scalar value", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == achar(239)//achar(191)//achar(191), "uFFFF as EF BF BF")
+   if (allocated(error)) return
+   call check_refused(error, 'x = "'//bs//'U00110000"', "a code point above 10FFFF")
+   if (allocated(error)) return
+   call check_refused(error, 'x = "'//bs//'U7FFFFFFE"', "a code point far above 10FFFF")
+end subroutine unicode_scalar_values
 
 end module tftest_parser

@@ -548,8 +548,9 @@ subroutine string_unicode_escape(error)
 
    character(len=*), parameter :: nl = new_line("a")
 
+   ! A surrogate is no Unicode scalar value; U+FFFE is a noncharacter, but a scalar value
    call check_token(error, """\uD800"",""\ufffe""", &
-      & [token_kind%invalid, token_kind%comma, token_kind%invalid, token_kind%eof], .false.)
+      & [token_kind%invalid, token_kind%comma, token_kind%string, token_kind%eof], .false.)
 end subroutine string_unicode_escape
 
 subroutine string_unicode_escape_lowercase(error)
