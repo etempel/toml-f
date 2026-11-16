@@ -92,7 +92,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("multiline-unicode-escape", multiline_unicode_escape), &
       & new_unittest("unicode-scalar-values", unicode_scalar_values), &
       & new_unittest("multiline-crlf", multiline_crlf), &
-      & new_unittest("header-extends-inline-array", header_extends_inline_array)]
+      & new_unittest("header-extends-inline-array", header_extends_inline_array), &
+      & new_unittest("invalid-utf8", invalid_utf8)]
 
 end subroutine collect_parser
 
@@ -945,5 +946,28 @@ subroutine header_extends_inline_array(error)
    if (allocated(error)) return
    call check_refused(error, "a = { b = 1 }"//nl//"[a.c]"//nl, "a header into an inline table")
 end subroutine header_extends_inline_array
+
+!> Strings, literals and comments are valid UTF-8
+subroutine invalid_utf8(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table), allocatable :: table
+
+   call check_refused(error, 'x = "a'//achar(255)//'"', "a byte FF in a string")
+   if (allocated(error)) return
+   call check_refused(error, "x = 'a"//achar(192)//achar(128)//"'", "an overlong NUL in a literal")
+   if (allocated(error)) return
+   call check_refused(error, 'x = """'//achar(237)//achar(160)//achar(128)//'"""', &
+      & "an encoded surrogate in a multi-line string")
+   if (allocated(error)) return
+   call check_refused(error, "x = 1 # "//achar(244)//achar(144)//achar(128)//achar(128), &
+      & "a code point above 10FFFF in a comment")
+   if (allocated(error)) return
+   call check_refused(error, 'x = "'//achar(226)//achar(130)//'"', "a truncated sequence")
+   if (allocated(error)) return
+   call check_loads(error, 'x = "'//achar(195)//achar(169)//achar(240)//achar(159)//achar(152)// &
+      & achar(128)//'" # '//achar(226)//achar(130)//achar(172)//nl, "valid UTF-8", table)
+end subroutine invalid_utf8
 
 end module tftest_parser

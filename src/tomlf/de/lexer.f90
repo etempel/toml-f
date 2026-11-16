@@ -370,6 +370,15 @@ subroutine next_token(lexer, token)
       end if
 
    end select
+
+   ! A TOML document is valid UTF-8 throughout; only these tokens can hold a byte above 7F
+   select case(token%kind)
+   case(token_kind%string, token_kind%mstring, token_kind%literal, token_kind%mliteral, &
+         & token_kind%comment)
+      if (.not.valid_utf8(lexer%chunk(token%first:min(token%last, len(lexer%chunk))))) &
+         & token%kind = token_kind%invalid
+   case default
+   end select
 end subroutine next_token
 
 !> Process next literal string token, can produce normal literals and multiline literals
@@ -1415,6 +1424,74 @@ function float_fits(text) result(fits)
    ! A zero significand is zero whatever its exponent
    fits = .not.nonzero .or. mag + sgn*expo < 0
 end function float_fits
+
+!> Whether text is well-formed UTF-8: no overlong form, no surrogate, nothing above 10FFFF
+pure function valid_utf8(text) result(valid)
+   !> Bytes of the token
+   character(*, tfc), intent(in) :: text
+   !> Whether every byte sequence is a valid UTF-8 encoding of a scalar value
+   logical :: valid
+
+   integer :: it, b, ncont, lo, hi, k
+
+   valid = .true.
+   it = 1
+   do while(it <= len(text))
+      b = byte_value(text(it:it))
+      lo = 128
+      hi = 191
+      select case(b)
+      case(0:127)
+         ncont = 0
+      case(194:223)
+         ncont = 1
+      case(224)
+         ncont = 2
+         lo = 160
+      case(225:236, 238:239)
+         ncont = 2
+      case(237)
+         ncont = 2
+         hi = 159
+      case(240)
+         ncont = 3
+         lo = 144
+      case(241:243)
+         ncont = 3
+      case(244)
+         ncont = 3
+         hi = 143
+      case default
+         valid = .false.
+         return
+      end select
+      if (it + ncont > len(text)) then
+         valid = .false.
+         return
+      end if
+      do k = 1, ncont
+         b = byte_value(text(it+k:it+k))
+         if (b < lo .or. b > hi) then
+            valid = .false.
+            return
+         end if
+         lo = 128
+         hi = 191
+      end do
+      it = it + ncont + 1
+   end do
+end function valid_utf8
+
+!> The byte a character holds, 0 to 255 (ichar may answer a negative number above 127)
+elemental function byte_value(ch) result(b)
+   !> One character
+   character(1, tfc), intent(in) :: ch
+   !> Its byte, 0 to 255
+   integer :: b
+
+   b = ichar(ch)
+   if (b < 0) b = b + 256
+end function byte_value
 
 !> Whether position pos of text is the carriage return of a CR LF newline, which a
 !> multi-line string stores as LF alone
