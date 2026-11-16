@@ -280,7 +280,7 @@ subroutine next_token(lexer, token)
    !> Current lexeme
    type(toml_token), intent(inout) :: token
 
-   integer :: prev, pos
+   integer :: prev, pos, it
 
    ! Consume current token
    lexer%pos = lexer%pos + token%last - token%first + 1
@@ -301,6 +301,13 @@ subroutine next_token(lexer, token)
          pos = pos + 1
       end do
       token = toml_token(token_kind%comment, prev, pos)
+      ! A comment may hold any character but the controls other than tab
+      do it = prev + 1, min(pos, len(lexer%chunk))
+         if (.not.valid_string(peek(lexer, it))) then
+            token%kind = token_kind%invalid
+            exit
+         end if
+      end do
 
    case(char_kind%space, char_kind%tab)
       do while(any(match(lexer, pos+1, [char_kind%space, char_kind%tab])) &

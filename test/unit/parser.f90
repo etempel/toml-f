@@ -93,7 +93,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("unicode-scalar-values", unicode_scalar_values), &
       & new_unittest("multiline-crlf", multiline_crlf), &
       & new_unittest("header-extends-inline-array", header_extends_inline_array), &
-      & new_unittest("invalid-utf8", invalid_utf8)]
+      & new_unittest("invalid-utf8", invalid_utf8), &
+      & new_unittest("comment-control-characters", comment_control_characters)]
 
 end subroutine collect_parser
 
@@ -969,5 +970,21 @@ subroutine invalid_utf8(error)
    call check_loads(error, 'x = "'//achar(195)//achar(169)//achar(240)//achar(159)//achar(152)// &
       & achar(128)//'" # '//achar(226)//achar(130)//achar(172)//nl, "valid UTF-8", table)
 end subroutine invalid_utf8
+
+!> A comment holds no control character but tab
+subroutine comment_control_characters(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   integer, parameter :: bad(5) = [0, 12, 16, 31, 127]
+   type(toml_table), allocatable :: table
+   integer :: it
+
+   do it = 1, size(bad)
+      call check_refused(error, "x = 1 # a"//achar(bad(it))//"b"//nl, "a control character in a comment")
+      if (allocated(error)) return
+   end do
+   call check_loads(error, "x = 1 # a"//achar(9)//"b"//nl, "a tab in a comment", table)
+end subroutine comment_control_characters
 
 end module tftest_parser
