@@ -88,7 +88,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("parse-multiline-string-blank-lines", parse_multiline_string_blank_lines), &
       & new_unittest("empty", empty), &
       & new_unittest("integer-out-of-range", integer_out_of_range), &
-      & new_unittest("float-out-of-range", float_out_of_range)]
+      & new_unittest("float-out-of-range", float_out_of_range), &
+      & new_unittest("multiline-unicode-escape", multiline_unicode_escape)]
 
 end subroutine collect_parser
 
@@ -851,5 +852,36 @@ subroutine float_out_of_range(error)
    call get_value(table, "e", val, stat=stat)
    call check(error, stat == 0 .and. val == 0.0_tfr, "a zero significand must read as zero")
 end subroutine float_out_of_range
+
+!> A multi-line basic string's escape is validated over its own digits. Each backslash is
+!> achar(92), so that no escape is written into this source as a literal.
+subroutine multiline_unicode_escape(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: bs = achar(92)
+   type(toml_table), allocatable :: table
+   character(:), allocatable :: val
+   integer :: stat
+
+   call check_loads(error, 'a = """'//bs//'u00c1abcdef"""'//nl//'b = """'//bs//'u00c1'//bs//'u00c1"""'//nl// &
+      & 'c = """'//bs//'U0001F600abc"""'//nl//'d = """'//bs//'x41bc"""'//nl, &
+      & "escapes in multi-line strings", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == achar(195)//achar(129)//"abcdef", "u00c1 then abcdef")
+   if (allocated(error)) return
+   call get_value(table, "b", val, stat=stat)
+   call check(error, stat == 0 .and. val == repeat(achar(195)//achar(129), 2), "u00c1 twice")
+   if (allocated(error)) return
+   call get_value(table, "c", val, stat=stat)
+   call check(error, stat == 0 .and. val == achar(240)//achar(159)//achar(152)//achar(128)//"abc", &
+      & "U0001F600 then abc")
+   if (allocated(error)) return
+   call get_value(table, "d", val, stat=stat)
+   call check(error, stat == 0 .and. val == "Abc", "x41 then bc")
+   if (allocated(error)) return
+   call check_refused(error, 'x = """'//bs//'ud800"""', "a surrogate in a multi-line string")
+end subroutine multiline_unicode_escape
 
 end module tftest_parser

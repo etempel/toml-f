@@ -500,7 +500,7 @@ subroutine next_dstring(lexer, token)
             if (verify(ch, valid_escape) == 0) cycle
             if (ch == "x") then
                expect = 2
-               hex = pos + 1
+               hex = it + 1
                cycle
             end if
             if (ch == "u") then
@@ -519,7 +519,7 @@ subroutine next_dstring(lexer, token)
          if (expect > 0) then
             expect = expect - 1
             valid = valid .and. verify(ch, hexnum) == 0
-            if (expect == 0) valid = valid .and. verify_ucs(lexer%chunk(hex:pos))
+            if (expect == 0) valid = valid .and. verify_ucs(lexer%chunk(hex:it))
             cycle
          end if
          escape = ch == char_kind%backslash
