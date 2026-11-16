@@ -755,6 +755,8 @@ subroutine next_integer(lexer, token)
    end do
 
    okay = .not.underscore .and. okay
+   ! TOML 1.0: an integer that cannot be represented losslessly is an error
+   if (okay) okay = integer_fits(lexer%chunk(prev:pos-1))
    token = toml_token(merge(token_kind%int, token_kind%invalid, okay), prev, pos-1)
 end subroutine next_integer
 
@@ -1283,6 +1285,65 @@ subroutine extract_string(lexer, token, string)
 
 end subroutine extract_string
 
+!> Whether an integer token's text lies in the signed 64-bit range. The lexer has already
+!> checked its shape: an optional sign (base 10 only), an optional 0x, 0o or 0b prefix,
+!> and digits of the base with single underscores between them.
+pure function integer_fits(text) result(fits)
+   !> Text of the integer token
+   character(*, tfc), intent(in) :: text
+   !> Whether the value is representable losslessly as a signed 64-bit integer
+   logical :: fits
+
+   character(*, tfc), parameter :: max_pos = "9223372036854775807", max_neg = "9223372036854775808"
+   character(len(text), tfc) :: digits
+   integer :: it, first, n
+   logical :: minus, lead
+   character(1, tfc) :: ch
+
+   minus = text(1:1) == "-"
+   first = 1
+   if (minus .or. text(1:1) == "+") first = 2
+   n = 0
+   lead = .true.
+   if (len(text) >= first + 1) then
+      if (text(first:first) == "0" .and. verify(text(first+1:first+1), "xob") == 0) then
+         ! Bases 16, 8 and 2: count the significant digits
+         do it = first + 2, len(text)
+            ch = text(it:it)
+            if (ch == "_" .or. (lead .and. ch == "0")) cycle
+            lead = .false.
+            n = n + 1
+            if (n == 1) digits(1:1) = ch
+         end do
+         select case(text(first+1:first+1))
+         case("x")
+            fits = n < 16 .or. (n == 16 .and. digits(1:1) <= "7")
+         case("o")
+            fits = n <= 21
+         case default
+            fits = n <= 63
+         end select
+         return
+      end if
+   end if
+   do it = first, len(text)
+      ch = text(it:it)
+      if (ch == "_" .or. (lead .and. ch == "0")) cycle
+      lead = .false.
+      n = n + 1
+      digits(n:n) = ch
+   end do
+   if (n < len(max_pos)) then
+      fits = .true.
+   else if (n > len(max_pos)) then
+      fits = .false.
+   else if (minus) then
+      fits = digits(:n) <= max_neg
+   else
+      fits = digits(:n) <= max_pos
+   end if
+end function integer_fits
+
 !> Extract integer value of token
 subroutine extract_integer(lexer, token, val)
    !> Instance of the lexer
@@ -1323,9 +1384,10 @@ subroutine extract_integer(lexer, token, val)
 
    minus = match(lexer, token%first, char_kind%minus)
 
-   ! Bases 2, 8 and 16 accumulate the bit pattern by shifting: literals with
-   ! the sign bit set are defined to wrap into two's complement, which a
-   ! multiply cannot do without overflowing the accumulator.
+   ! Bases 2, 8 and 16 accumulate the bit pattern by shifting. next_integer
+   ! refuses a literal outside the signed 64-bit range (integer_fits), so the
+   ! sign bit is never set here, and a base-10 value accumulates with its own
+   ! sign, which reaches the most negative value without overflowing.
    select case(base)
    case(2)
       shift = 1

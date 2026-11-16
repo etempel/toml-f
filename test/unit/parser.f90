@@ -14,7 +14,7 @@
 module tftest_parser
    use testdrive
    use tomlf_build, only : get_value
-   use tomlf_constants, only : nl => TOML_NEWLINE
+   use tomlf_constants, only : nl => TOML_NEWLINE, tfi
    use tomlf_de, only : toml_loads
    use tomlf_de_lexer, only : toml_lexer, new_lexer_from_string, toml_token, token_kind
    use tomlf_de_parser
@@ -86,7 +86,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("parse-escaped-key", parse_escaped_key), &
       & new_unittest("parse-multiline-string", parse_multiline_string), &
       & new_unittest("parse-multiline-string-blank-lines", parse_multiline_string_blank_lines), &
-      & new_unittest("empty", empty)]
+      & new_unittest("empty", empty), &
+      & new_unittest("integer-out-of-range", integer_out_of_range)]
 
 end subroutine collect_parser
 
@@ -735,5 +736,82 @@ subroutine move_error(error, parse_error)
       error%message = parse_error%message
    end if
 end subroutine move_error
+
+!> Loads text and requires it refused, with a diagnostic and no table
+subroutine check_refused(error, text, what)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+   !> TOML text
+   character(*), intent(in) :: text
+   !> What the text is, for the message
+   character(*), intent(in) :: what
+
+   type(toml_table), allocatable :: table
+   type(toml_error), allocatable :: toml_err
+
+   call toml_loads(table, text, error=toml_err)
+   call check(error, allocated(toml_err), what//" must be refused")
+end subroutine check_refused
+
+!> Loads text and requires it accepted
+subroutine check_loads(error, text, what, table)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+   !> TOML text
+   character(*), intent(in) :: text
+   !> What the text is, for the message
+   character(*), intent(in) :: what
+   !> The document
+   type(toml_table), allocatable, intent(out) :: table
+
+   type(toml_error), allocatable :: toml_err
+
+   call toml_loads(table, text, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, what//" must load: "//toml_err%message)
+      return
+   end if
+   call check(error, allocated(table), what//" must give a table")
+end subroutine check_loads
+
+!> TOML 1.0: an integer that cannot be represented losslessly is an error
+subroutine integer_out_of_range(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: refused(6) = [character(70) :: &
+      & "x = 9223372036854775808", "x = -9223372036854775809", "x = 0xffffffffffffffff", &
+      & "x = 0x8000000000000000", "x = 0o1000000000000000000000", &
+      & "x = 0b1"//repeat("0", 63)]
+   type(toml_table), allocatable :: table
+   integer(tfi) :: val
+   integer :: it, stat
+
+   do it = 1, size(refused)
+      call check_refused(error, trim(refused(it)), trim(refused(it)))
+      if (allocated(error)) return
+   end do
+   call check_loads(error, "a = 9223372036854775807"//nl//"b = -9223372036854775808"//nl// &
+      & "c = 0x7fffffffffffffff"//nl//"d = 0o777777777777777777777"//nl// &
+      & "e = 0b"//repeat("1", 63)//nl//"f = 0x0000000000000000001"//nl, "the int64 extremes", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == huge(val), "huge(int64) must read back")
+   if (allocated(error)) return
+   call get_value(table, "b", val, stat=stat)
+   call check(error, stat == 0 .and. val == -huge(val) - 1, "-2**63 must read back")
+   if (allocated(error)) return
+   call get_value(table, "c", val, stat=stat)
+   call check(error, stat == 0 .and. val == huge(val), "0x7fffffffffffffff must read back")
+   if (allocated(error)) return
+   call get_value(table, "d", val, stat=stat)
+   call check(error, stat == 0 .and. val == huge(val), "0o777777777777777777777 must read back")
+   if (allocated(error)) return
+   call get_value(table, "e", val, stat=stat)
+   call check(error, stat == 0 .and. val == huge(val), "63 binary ones must read back")
+   if (allocated(error)) return
+   call get_value(table, "f", val, stat=stat)
+   call check(error, stat == 0 .and. val == 1, "leading zeros of a hex literal must not count")
+end subroutine integer_out_of_range
 
 end module tftest_parser

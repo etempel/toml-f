@@ -1750,10 +1750,10 @@ subroutine integer_hex_overflow(error)
    !> Error handling
    type(error_type), allocatable, intent(out) :: error
 
-   ! Test 0x8000000000000000 (sign bit set, represents min int64 in two's complement)
-   ! This should now be accepted and extracted as -9223372036854775808
+   ! 0x8000000000000000 is 2**63, outside the signed 64-bit range: TOML 1.0 requires an
+   ! error for an integer that cannot be represented losslessly
    call check_token(error, "0x8000000000000000", &
-      & [token_kind%int, token_kind%eof], .false.)
+      & [token_kind%invalid, token_kind%eof], .false.)
 end subroutine integer_hex_overflow
 
 !> Integer overflow: Test octal at maximum boundary
