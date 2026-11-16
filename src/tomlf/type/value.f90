@@ -151,7 +151,9 @@ pure function match_key(self, key) result(match)
    logical :: match
 
    if (allocated(self%key)) then
-      match = key == self%key
+      ! Fortran's == pads the shorter operand with blanks, so "a" would match "a "
+      match = len(key) == len(self%key)
+      if (match) match = key == self%key
    else
       match = .false.
    end if

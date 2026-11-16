@@ -95,7 +95,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("header-extends-inline-array", header_extends_inline_array), &
       & new_unittest("invalid-utf8", invalid_utf8), &
       & new_unittest("comment-control-characters", comment_control_characters), &
-      & new_unittest("table-redefinition", table_redefinition)]
+      & new_unittest("table-redefinition", table_redefinition), &
+      & new_unittest("key-trailing-blank", key_trailing_blank)]
 
 end subroutine collect_parser
 
@@ -1012,5 +1013,23 @@ subroutine table_redefinition(error)
    call check_loads(error, "a.b = 1"//nl//"[a.c]"//nl//"[x.y]"//nl//"[x]"//nl, &
       & "a header below a dotted table, and an implicit table defined once", table)
 end subroutine table_redefinition
+
+!> Keys are compared exactly: a trailing blank makes another key
+subroutine key_trailing_blank(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table), allocatable :: table
+   integer(tfi) :: val
+   integer :: stat
+
+   call check_loads(error, '"a" = 1'//nl//'"a " = 2'//nl, "two keys differing by a trailing blank", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == 1, '"a" must read 1')
+   if (allocated(error)) return
+   call get_value(table, "a ", val, stat=stat)
+   call check(error, stat == 0 .and. val == 2, '"a " must read 2')
+end subroutine key_trailing_blank
 
 end module tftest_parser
