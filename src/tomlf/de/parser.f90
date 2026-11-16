@@ -188,6 +188,7 @@ subroutine parse_table_header(parser, lexer)
    top = top - 1
 
    call walk_stack(parser, top, stack)
+   if (allocated(parser%diagnostic)) return
 
    if (array_of_tables) then
       call parser%current%get(key%key, ptr)
@@ -359,6 +360,17 @@ contains
          if (.not.associated(table)) then
             array => cast_to_array(ptr)
             if (associated(array)) then
+               ! A table inside a static array is an inline table, and carries no
+               ! origin of its own: report against the array, which has one
+               if (array%inline) then
+                  call semantic_error(parser%diagnostic, lexer, &
+                     & parser%context%token(key%origin), &
+                     & parser%context%token(array%origin), &
+                     & "Inline array '"//key%key//"' cannot be extended by a table header", &
+                     & "extended here", &
+                     & "defined as inline")
+                  return
+               end if
                if (len(array) > 0) then
                   call array%get(len(array), ptr)
                   if (associated(ptr)) table => cast_to_table(ptr)
@@ -387,6 +399,7 @@ contains
                & "Inline table '"//key%key//"' cannot be used as a key", &
                & "inline table cannot be extended", &
                & "defined as inline first")
+            return
          end if
       end do
 

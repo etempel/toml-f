@@ -91,7 +91,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("float-out-of-range", float_out_of_range), &
       & new_unittest("multiline-unicode-escape", multiline_unicode_escape), &
       & new_unittest("unicode-scalar-values", unicode_scalar_values), &
-      & new_unittest("multiline-crlf", multiline_crlf)]
+      & new_unittest("multiline-crlf", multiline_crlf), &
+      & new_unittest("header-extends-inline-array", header_extends_inline_array)]
 
 end subroutine collect_parser
 
@@ -934,5 +935,15 @@ subroutine multiline_crlf(error)
    if (allocated(error)) return
    call check_refused(error, "x = "//q3//"l1"//cr//"l2"//q3, "a bare CR in a literal string")
 end subroutine multiline_crlf
+
+!> A table header naming an inline array of tables is refused, not a memory fault
+subroutine header_extends_inline_array(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   call check_refused(error, "a = [{ b = 1 }]"//nl//"[a.c]"//nl, "a header into an inline array")
+   if (allocated(error)) return
+   call check_refused(error, "a = { b = 1 }"//nl//"[a.c]"//nl, "a header into an inline table")
+end subroutine header_extends_inline_array
 
 end module tftest_parser
