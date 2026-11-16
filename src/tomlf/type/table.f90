@@ -37,6 +37,9 @@ module tomlf_type_table
       !> Table was implictly created
       logical :: implicit = .false.
 
+      !> Table was defined by a [header] or [[header]], and dotted keys cannot extend it
+      logical :: header = .false.
+
       !> Is an inline table and is therefore non-extendable
       logical :: inline = .false.
 

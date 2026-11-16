@@ -94,7 +94,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("multiline-crlf", multiline_crlf), &
       & new_unittest("header-extends-inline-array", header_extends_inline_array), &
       & new_unittest("invalid-utf8", invalid_utf8), &
-      & new_unittest("comment-control-characters", comment_control_characters)]
+      & new_unittest("comment-control-characters", comment_control_characters), &
+      & new_unittest("table-redefinition", table_redefinition)]
 
 end subroutine collect_parser
 
@@ -986,5 +987,30 @@ subroutine comment_control_characters(error)
    end do
    call check_loads(error, "x = 1 # a"//achar(9)//"b"//nl, "a tab in a comment", table)
 end subroutine comment_control_characters
+
+!> A table is defined once, by a header or by dotted keys
+subroutine table_redefinition(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table), allocatable :: table
+
+   call check_refused(error, "[a.b]"//nl//"[a]"//nl//"[a]"//nl, "[a] twice after [a.b]")
+   if (allocated(error)) return
+   call check_refused(error, "[d.foo]"//nl//"v = 1"//nl//"[d]"//nl//"l = 2"//nl//"[d]"//nl//"r = 3"//nl, &
+      & "[d] twice after [d.foo]")
+   if (allocated(error)) return
+   call check_refused(error, "[a.b.c]"//nl//"z = 9"//nl//"[a]"//nl//"b.c.t = 1"//nl, &
+      & "dotted keys into a table defined by a header")
+   if (allocated(error)) return
+   call check_refused(error, "[a.b.c]"//nl//"[a]"//nl//"b.d = 1"//nl//"[a.b]"//nl, &
+      & "a header for a table dotted keys defined")
+   if (allocated(error)) return
+   call check_loads(error, "[a.b.c]"//nl//"[a]"//nl//"b.d = 1"//nl//"[a.b.e]"//nl, &
+      & "dotted keys into an implicit table, and a header below it", table)
+   if (allocated(error)) return
+   call check_loads(error, "a.b = 1"//nl//"[a.c]"//nl//"[x.y]"//nl//"[x]"//nl, &
+      & "a header below a dotted table, and an implicit table defined once", table)
+end subroutine table_redefinition
 
 end module tftest_parser

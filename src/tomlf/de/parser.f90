@@ -215,6 +215,7 @@ subroutine parse_table_header(parser, lexer)
          array%inline = .false.
       end if
       call add_table(array, table)
+      table%header = .true.
    else
       call parser%current%get(key%key, ptr)
       if (associated(ptr)) then
@@ -233,6 +234,9 @@ subroutine parse_table_header(parser, lexer)
       else
          call add_table(parser%current, key, table)
       end if
+      ! Defined now: a second header for it is a redefinition
+      table%implicit = .false.
+      table%header = .true.
    end if
 
    parser%current => table
@@ -495,6 +499,18 @@ recursive subroutine parse_keyval(parser, lexer, table)
             & "defined as inline first")
          return
       end if
+
+      if (tptr%header) then
+         call semantic_error(parser%diagnostic, lexer, &
+            & parser%context%token(key%origin), &
+            & parser%context%token(tptr%origin), &
+            & "Cannot add keys with dotted keys to a table defined by a header", &
+            & "dotted key extends it here", &
+            & "defined by a header first")
+         return
+      end if
+      ! Defined now by dotted keys: a header for it later is a redefinition
+      tptr%implicit = .false.
 
       call next_token(parser, lexer)
       if (parser%token%kind == token_kind%whitespace) then
