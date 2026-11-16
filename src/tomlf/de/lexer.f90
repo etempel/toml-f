@@ -402,6 +402,8 @@ subroutine next_sstring(lexer, token)
       valid = .true.
       do it = prev + 3, pos - 1
          ch = peek(lexer, it)
+         ! A carriage return is valid only as the first half of a CR LF newline
+         if (ch == char_kind%carriage_return .and. match(lexer, it+1, char_kind%newline)) cycle
          valid = valid .and. valid_string(ch)
       end do
 
@@ -493,6 +495,9 @@ subroutine next_dstring(lexer, token)
             expect = 0
             cycle
          end if
+         ! A carriage return is valid only as the first half of a CR LF newline
+         if (ch == char_kind%carriage_return .and. match(lexer, it+1, char_kind%newline) &
+            & .and. expect == 0) cycle
          valid = valid .and. valid_string(ch)
          if (escape) then
             escape = .false.
@@ -1180,8 +1185,8 @@ subroutine extract_string(lexer, token, string)
    !> String value of token
    character(kind=tfc, len=:), allocatable, intent(out) :: string
 
-   integer :: it, length, j
-   logical :: escape, leading_newline
+   integer :: it, length, j, lead
+   logical :: escape
    character(1, tfc) :: ch
    character(kind=tfc, len=:), allocatable :: raw
 
@@ -1217,9 +1222,8 @@ subroutine extract_string(lexer, token, string)
          it = it + 1
       end do
    case(token_kind%mstring)
-      leading_newline = peek(lexer, token%first+3) == char_kind%newline
-      allocate(character(len=token%last - token%first - merge(5, 4, leading_newline), kind=tfc) :: raw)
-      raw = lexer%chunk(token%first + merge(4, 3, leading_newline):token%last - 3)
+      lead = leading_newline(lexer, token)
+      raw = lexer%chunk(token%first + 3 + lead:token%last - 3)
       string = ""
       escape = .false.
       it = 1
@@ -1269,16 +1273,19 @@ subroutine extract_string(lexer, token, string)
             cycle
          end if
          escape = ch == char_kind%backslash
-         if (.not.escape) string = string // ch
+         if (.not.escape .and. .not.crlf(raw, it)) string = string // ch
          it = it + 1
       end do
    case(token_kind%literal)
       allocate(character(len=length - 2, kind=tfc) :: string)
       string = lexer%chunk(token%first+1:token%last-1)
    case(token_kind%mliteral)
-      leading_newline = peek(lexer, token%first+3) == char_kind%newline
-      allocate(character(len=length - merge(7, 6, leading_newline), kind=tfc) :: string)
-      string = lexer%chunk(token%first+merge(4, 3, leading_newline):token%last-3)
+      lead = leading_newline(lexer, token)
+      raw = lexer%chunk(token%first + 3 + lead:token%last - 3)
+      string = ""
+      do it = 1, len(raw)
+         if (.not.crlf(raw, it)) string = string // raw(it:it)
+      end do
    case(token_kind%keypath)
       allocate(character(len=length, kind=tfc) :: string)
       string = lexer%chunk(token%first:token%last)
@@ -1408,6 +1415,39 @@ function float_fits(text) result(fits)
    ! A zero significand is zero whatever its exponent
    fits = .not.nonzero .or. mag + sgn*expo < 0
 end function float_fits
+
+!> Whether position pos of text is the carriage return of a CR LF newline, which a
+!> multi-line string stores as LF alone
+pure function crlf(text, pos)
+   !> Text of the string
+   character(*, tfc), intent(in) :: text
+   !> Position in text
+   integer, intent(in) :: pos
+   !> Whether text(pos:pos+1) is CR LF
+   logical :: crlf
+
+   crlf = .false.
+   if (pos < len(text)) crlf = text(pos:pos+1) == char_kind%carriage_return//char_kind%newline
+end function crlf
+
+!> Length of the newline that immediately follows a multi-line string's opening
+!> delimiter, which the string does not include: 1 for LF, 2 for CR LF, else 0
+pure function leading_newline(lexer, token) result(lead)
+   !> Instance of the lexer
+   class(toml_lexer), intent(in) :: lexer
+   !> Multi-line string or literal token
+   type(toml_token), intent(in) :: token
+   !> Length of the leading newline
+   integer :: lead
+
+   lead = 0
+   if (match(lexer, token%first+3, char_kind%newline)) then
+      lead = 1
+   else if (match(lexer, token%first+3, char_kind%carriage_return) &
+      & .and. match(lexer, token%first+4, char_kind%newline)) then
+      lead = 2
+   end if
+end function leading_newline
 
 !> Extract integer value of token
 subroutine extract_integer(lexer, token, val)

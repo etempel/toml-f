@@ -90,7 +90,8 @@ subroutine collect_parser(testsuite)
       & new_unittest("integer-out-of-range", integer_out_of_range), &
       & new_unittest("float-out-of-range", float_out_of_range), &
       & new_unittest("multiline-unicode-escape", multiline_unicode_escape), &
-      & new_unittest("unicode-scalar-values", unicode_scalar_values)]
+      & new_unittest("unicode-scalar-values", unicode_scalar_values), &
+      & new_unittest("multiline-crlf", multiline_crlf)]
 
 end subroutine collect_parser
 
@@ -905,5 +906,33 @@ subroutine unicode_scalar_values(error)
    if (allocated(error)) return
    call check_refused(error, 'x = "'//bs//'U7FFFFFFE"', "a code point far above 10FFFF")
 end subroutine unicode_scalar_values
+
+!> CR LF is a newline inside multi-line strings, and is stored as LF
+subroutine multiline_crlf(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: cr = achar(13), q3 = "'''"
+   type(toml_table), allocatable :: table
+   character(:), allocatable :: val
+   integer :: stat
+
+   call check_loads(error, 'a = """'//cr//nl//'l1'//cr//nl//'l2"""'//cr//nl// &
+      & "b = "//q3//cr//nl//"l1"//cr//nl//"l2"//q3//cr//nl// &
+      & 'c = """x'//achar(92)//cr//nl//'   y"""'//cr//nl, "CR LF in multi-line strings", table)
+   if (allocated(error)) return
+   call get_value(table, "a", val, stat=stat)
+   call check(error, stat == 0 .and. val == "l1"//nl//"l2", "a basic string must read l1 LF l2")
+   if (allocated(error)) return
+   call get_value(table, "b", val, stat=stat)
+   call check(error, stat == 0 .and. val == "l1"//nl//"l2", "a literal string must read l1 LF l2")
+   if (allocated(error)) return
+   call get_value(table, "c", val, stat=stat)
+   call check(error, stat == 0 .and. val == "xy", "a line-ending backslash must still trim CR LF")
+   if (allocated(error)) return
+   call check_refused(error, 'x = """l1'//cr//'l2"""', "a bare CR in a basic string")
+   if (allocated(error)) return
+   call check_refused(error, "x = "//q3//"l1"//cr//"l2"//q3, "a bare CR in a literal string")
+end subroutine multiline_crlf
 
 end module tftest_parser
