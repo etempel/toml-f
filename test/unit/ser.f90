@@ -14,6 +14,8 @@
 module tftest_ser
    use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_positive_inf, ieee_negative_inf, &
       & ieee_quiet_nan
+   use, intrinsic :: ieee_exceptions, only : ieee_get_flag, ieee_set_flag, ieee_support_flag, &
+      & ieee_invalid, ieee_usual
    use testdrive
    use tomlf_build, only : get_value, set_value
    use tomlf_constants, only : tfi, tfr, tf_sp
@@ -47,7 +49,8 @@ subroutine collect_ser(testsuite)
       & new_unittest("ser-roundtrip-simple", ser_roundtrip_simple), &
       & new_unittest("ser-real-round-trip", ser_real_round_trip), &
       & new_unittest("ser-control-characters", ser_control_characters), &
-      & new_unittest("ser-inline-nested-table", ser_inline_nested_table)]
+      & new_unittest("ser-inline-nested-table", ser_inline_nested_table), &
+      & new_unittest("ser-nan-quiet", ser_nan_quiet)]
 
 end subroutine collect_ser
 
@@ -519,6 +522,42 @@ subroutine ser_inline_nested_table(error)
    call get_value(sub, "b", ival, stat=stat)
    call check(error, stat == 0 .and. ival == 1, "arr[1][1].a.b must read 1")
 end subroutine ser_inline_nested_table
+
+
+!> Writing a NaN raises no IEEE invalid. The flag is cleared and read in this body, since a
+!> flag read inside a called procedure reads quiet on some processors.
+subroutine ser_nan_quiet(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table) :: table
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output
+   real(tfr) :: val
+   logical :: invalid
+
+   val = 0.0_tfr
+   if (.not.ieee_support_flag(ieee_invalid, val)) then
+      call skip_test(error, "IEEE invalid flag not supported")
+      return
+   end if
+   val = ieee_value(val, ieee_quiet_nan)
+   call new_table(table)
+   call set_value(table, "x", val)
+
+   call ieee_set_flag(ieee_usual, .false.)
+   call toml_dumps(table, output, error=toml_err)
+   call ieee_get_flag(ieee_invalid, invalid)
+   call ieee_set_flag(ieee_usual, .false.)
+
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   call check(error, .not.invalid, "writing a NaN must not raise IEEE invalid")
+   if (allocated(error)) return
+   call check(error, index(output, "nan") > 0, "a NaN must be written as nan")
+end subroutine ser_nan_quiet
 
 
 end module tftest_ser

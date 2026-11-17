@@ -244,12 +244,14 @@ pure function to_string_r8(val) result(string)
 
    character(128, tfc) :: buffer
 
-   if (val > huge(val)) then
+   ! NaN first: an ordered comparison on a NaN signals IEEE invalid on some processors
+   ! (gfortran), where /= is quiet
+   if (val /= val) then
+      string = "nan"
+   else if (val > huge(val)) then
       string = "+inf"
    else if (val < -huge(val)) then
       string = "-inf"
-   else if (val /= val) then
-      string = "nan"
    else if (val == 0.0_rk) then
       ! The sign from the bit itself: some processors (ifx) drop a zero's sign in F and ES editing
       if (transfer(val, 0_tfi) < 0_tfi) then
