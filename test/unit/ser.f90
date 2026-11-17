@@ -12,9 +12,11 @@
 ! limitations under the License.
 
 module tftest_ser
+   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_positive_inf, ieee_negative_inf, &
+      & ieee_quiet_nan
    use testdrive
-   use tomlf_build, only : set_value
-   use tomlf_constants, only : tfi, tfr
+   use tomlf_build, only : get_value, set_value
+   use tomlf_constants, only : tfi, tfr, tf_sp
    use tomlf_datetime, only : toml_datetime, toml_date, toml_time
    use tomlf_de, only : toml_parse, toml_loads
    use tomlf_error, only : toml_error
@@ -42,7 +44,8 @@ subroutine collect_ser(testsuite)
       & new_unittest("ser-boolean", ser_boolean), &
       & new_unittest("ser-array", ser_array), &
       & new_unittest("ser-table", ser_table), &
-      & new_unittest("ser-roundtrip-simple", ser_roundtrip_simple)]
+      & new_unittest("ser-roundtrip-simple", ser_roundtrip_simple), &
+      & new_unittest("ser-real-round-trip", ser_real_round_trip)]
 
 end subroutine collect_ser
 
@@ -232,6 +235,99 @@ subroutine ser_roundtrip_simple(error)
 
    call check(error, allocated(table2), "Round-trip should produce valid table")
 end subroutine ser_roundtrip_simple
+
+
+!> A real is written with enough digits to read back bit for bit at every magnitude, and a
+!> zero keeps its sign: every binary decade of a real64 and of a real32, both signs, from
+!> the smallest subnormal to huge, and a few values of note
+subroutine ser_real_round_trip(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table) :: table
+   type(toml_table), allocatable :: reread
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output
+   real(tfr), allocatable :: dval(:)
+   real(tf_sp), allocatable :: sval(:)
+   character(16) :: key
+   character(32) :: text
+   real(tfr) :: zero, a, b, dread
+   real(tf_sp) :: szero, sread
+   integer :: it, k, nd, ns, stat
+   logical :: same
+
+   zero = 0.0_tfr
+   a = 0.1_tfr
+   b = 0.2_tfr
+   allocate(dval(2*(maxexponent(zero) - minexponent(zero) + digits(zero) + 1) + 9))
+   nd = 0
+   do k = minexponent(zero) - digits(zero), maxexponent(zero) - 1
+      dval(nd+1) = scale(1.0_tfr, k)
+      dval(nd+2) = -scale(1.0_tfr, k)
+      nd = nd + 2
+   end do
+   dval(nd+1:nd+9) = [huge(zero), -huge(zero), a + b, 1.0e-20_tfr, zero, -zero, &
+      & ieee_value(zero, ieee_positive_inf), ieee_value(zero, ieee_negative_inf), &
+      & ieee_value(zero, ieee_quiet_nan)]
+   nd = nd + 9
+
+   szero = 0.0_tf_sp
+   allocate(sval(2*(maxexponent(szero) - minexponent(szero) + digits(szero) + 1) + 4))
+   ns = 0
+   do k = minexponent(szero) - digits(szero), maxexponent(szero) - 1
+      sval(ns+1) = scale(1.0_tf_sp, k)
+      sval(ns+2) = -scale(1.0_tf_sp, k)
+      ns = ns + 2
+   end do
+   sval(ns+1:ns+4) = [huge(szero), -huge(szero), szero, -szero]
+   ns = ns + 4
+
+   call new_table(table)
+   do it = 1, nd
+      write(key, '("d", i0)') it
+      call set_value(table, trim(key), dval(it))
+   end do
+   do it = 1, ns
+      write(key, '("s", i0)') it
+      call set_value(table, trim(key), sval(it))
+   end do
+
+   call toml_dumps(table, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   call toml_loads(reread, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message)
+      return
+   end if
+
+   do it = 1, nd
+      write(key, '("d", i0)') it
+      call get_value(reread, trim(key), dread, stat=stat)
+      if (dval(it) /= dval(it)) then
+         same = stat == 0 .and. dread /= dread
+      else
+         same = stat == 0 .and. transfer(dread, 0_tfi) == transfer(dval(it), 0_tfi)
+      end if
+      if (.not.same) then
+         write(text, '(es24.16e3)') dval(it)
+         call test_failed(error, "real64 "//trim(adjustl(text))//" must read back bit for bit")
+         return
+      end if
+   end do
+   do it = 1, ns
+      write(key, '("s", i0)') it
+      call get_value(reread, trim(key), sread, stat=stat)
+      if (.not.(stat == 0 .and. transfer(sread, 0) == transfer(sval(it), 0))) then
+         write(text, '(es16.8e3)') sval(it)
+         call test_failed(error, "real32 "//trim(adjustl(text))//" must read back bit for bit")
+         return
+      end if
+   end do
+end subroutine ser_real_round_trip
 
 
 end module tftest_ser

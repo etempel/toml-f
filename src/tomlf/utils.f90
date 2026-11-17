@@ -245,6 +245,13 @@ pure function to_string_r8(val) result(string)
       string = "-inf"
    else if (val /= val) then
       string = "nan"
+   else if (val == 0.0_rk) then
+      ! The sign from the bit itself: some processors (ifx) drop a zero's sign in F and ES editing
+      if (transfer(val, 0_tfi) < 0_tfi) then
+         string = "-0.0"
+      else
+         string = "0.0"
+      end if
    else
       if (abs(val) >= 1.0e+100_rk) then
          write(buffer, "(es24.16e3)") val
@@ -252,8 +259,12 @@ pure function to_string_r8(val) result(string)
          write(buffer, "(es24.16e2)") val
       else if (abs(val) >= 1.0e+3_rk) then
          write(buffer, "(es24.16e1)") val
-      else
+      else if (abs(val) >= 1.0_rk) then
          write(buffer, "(f24.16)") val
+      else
+         ! Below 1, f24.16 keeps one significant digit fewer per decade, and none below
+         ! about 5e-17: write seventeen significant digits whatever the magnitude
+         write(buffer, "(es24.16e3)") val
       end if
       string = trim(adjustl(buffer))
    end if
