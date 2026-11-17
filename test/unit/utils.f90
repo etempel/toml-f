@@ -35,7 +35,8 @@ subroutine collect_utils(testsuite)
       & new_unittest("string-i4", string_i4), &
       & new_unittest("string-i8", string_i8), &
       & new_unittest("escape-backslash", escape_backslash), &
-      & new_unittest("escape-string", escape_string)]
+      & new_unittest("escape-string", escape_string), &
+      & new_unittest("string-r8-subnormal", string_r8_subnormal)]
 
 end subroutine collect_utils
 
@@ -204,6 +205,65 @@ contains
    end subroutine compare
 
 end subroutine escape_string
+
+
+!> A subnormal is not written as a zero, also under abrupt underflow (flush-to-zero and
+!> denormals-are-zero), where it compares equal to zero; a zero is written with its sign.
+!> Every value is made from its bits, so that no arithmetic flushes it.
+subroutine string_r8_subnormal(error)
+   use, intrinsic :: ieee_arithmetic, only : ieee_support_underflow_control, &
+      & ieee_get_underflow_mode, ieee_set_underflow_mode
+   use tomlf_constants, only : tfi, tfr
+   use tomlf_utils, only : to_string
+
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   real(tfr) :: smallest, largest, zero, negzero
+   character(:), allocatable :: text_smallest, text_negative, text_largest, text_abrupt, expected
+   character(32) :: buffer
+   logical :: gradual
+
+   ! The smallest subnormal, the largest subnormal, +0 and -0
+   smallest = transfer(1_tfi, 0.0_tfr)
+   largest = transfer(huge(0_tfi) / 2_tfi**11, 0.0_tfr)
+   zero = transfer(0_tfi, 0.0_tfr)
+   negzero = transfer(-huge(0_tfi) - 1_tfi, 0.0_tfr)
+
+   text_smallest = to_string(smallest)
+   call check(error, index(text_smallest, "E-324") > 0 .and. text_smallest(1:1) /= "-", &
+      & "the smallest subnormal must be written as itself, not "//text_smallest)
+   if (allocated(error)) return
+   text_negative = to_string(-smallest)
+   call check(error, index(text_negative, "E-324") > 0 .and. text_negative(1:1) == "-", &
+      & "the negative smallest subnormal must be written as itself, not "//text_negative)
+   if (allocated(error)) return
+   text_largest = to_string(largest)
+   call check(error, index(text_largest, "E-308") > 0, &
+      & "the largest subnormal must be written as itself, not "//text_largest)
+   if (allocated(error)) return
+   call check(error, to_string(zero), "0.0")
+   if (allocated(error)) return
+   call check(error, to_string(negzero), "-0.0")
+   if (allocated(error)) return
+
+   ! Under abrupt underflow smallest == 0 is true, and whether ES editing still writes its
+   ! digits is the runtime's matter: gfortran's and nagfor's write zero digits, ifx's the
+   ! value. The writer must keep the digits whenever the runtime gives them.
+   if (.not.ieee_support_underflow_control(smallest)) return
+   call ieee_get_underflow_mode(gradual)
+   call ieee_set_underflow_mode(.false.)
+   text_abrupt = to_string(smallest)
+   write(buffer, '(es24.16e3)') smallest
+   call ieee_set_underflow_mode(gradual)
+   if (scan(buffer(:index(buffer, "E")), "123456789") > 0) then
+      expected = trim(adjustl(buffer))
+   else
+      expected = "0.0"
+   end if
+   call check(error, text_abrupt, expected, &
+      & "under abrupt underflow a subnormal must be written as ES editing writes it")
+end subroutine string_r8_subnormal
 
 
 !> The escaper of toml-f at d08aec0, which appends one character at a time, kept as a

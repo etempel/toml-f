@@ -280,8 +280,15 @@ pure function to_string_r8(val) result(string)
    else if (val < -huge(val)) then
       string = "-inf"
    else if (val == 0.0_rk) then
+      ! A zero, or under abrupt underflow (flush-to-zero and denormals-are-zero, as in ifx's
+      ! default build) a subnormal, which then compares equal to zero. The text ES editing gives
+      ! tells them apart: a test of the bits would too, but an optimiser that assumes gradual
+      ! underflow turns that test back into val == 0.
+      write(buffer, "(es24.16e3)") val
+      if (scan(buffer(:index(buffer, "E")), "123456789") > 0) then
+         string = trim(adjustl(buffer))
       ! The sign from the bit itself: some processors (ifx) drop a zero's sign in F and ES editing
-      if (transfer(val, 0_tfi) < 0_tfi) then
+      else if (transfer(val, 0_tfi) < 0_tfi) then
          string = "-0.0"
       else
          string = "0.0"
