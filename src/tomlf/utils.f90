@@ -50,35 +50,62 @@ subroutine toml_escape_string(raw, escaped, multiline)
    logical, intent(in), optional :: multiline
 
    character(*, tfc), parameter :: hexdigit = "0123456789ABCDEF"
-   integer :: i, code
+   character(2, tfc) :: short
+   integer :: i, k, n, code
    logical :: preserve_newline
 
    preserve_newline = .false.
    if (present(multiline)) preserve_newline = multiline
 
-   escaped = '"'
+   ! Size the result in one pass and fill it in a second: appending one character at a
+   ! time would copy everything written so far, for time growing with the square of the length
+   n = 2
    do i = 1, len(raw)
       select case(raw(i:i))
-      case default; escaped = escaped // raw(i:i)
+      case default
+         n = n + 1
+      case(achar(0):achar(7), achar(11), achar(14):achar(31), achar(127))
+         n = n + 6
+      case("\", '"', TOML_FORMFEED, TOML_CARRIAGE_RETURN, TOML_TABULATOR, TOML_BACKSPACE)
+         n = n + 2
+      case(TOML_NEWLINE)
+         n = n + merge(1, 2, preserve_newline)
+      end select
+   end do
+
+   allocate(character(kind=tfc, len=n) :: escaped)
+   escaped(1:1) = '"'
+   k = 1
+   do i = 1, len(raw)
+      select case(raw(i:i))
+      case default
+         escaped(k+1:k+1) = raw(i:i)
+         k = k + 1
+         cycle
       case(achar(0):achar(7), achar(11), achar(14):achar(31), achar(127))
          ! TOML forbids these control characters unescaped, and has no short escape for them
          code = iachar(raw(i:i))
-         escaped = escaped // "\u00" // hexdigit(code/16+1:code/16+1) // hexdigit(mod(code, 16)+1:mod(code, 16)+1)
-      case("\"); escaped = escaped // "\\"
-      case('"'); escaped = escaped // '\"'
+         escaped(k+1:k+6) = "\u00" // hexdigit(code/16+1:code/16+1) // hexdigit(mod(code, 16)+1:mod(code, 16)+1)
+         k = k + 6
+         cycle
       case(TOML_NEWLINE)
          if (preserve_newline) then
-            escaped = escaped // raw(i:i)
-         else
-            escaped = escaped // "\n"
+            escaped(k+1:k+1) = raw(i:i)
+            k = k + 1
+            cycle
          end if
-      case(TOML_FORMFEED); escaped = escaped // "\f"
-      case(TOML_CARRIAGE_RETURN); escaped = escaped // "\r"
-      case(TOML_TABULATOR); escaped = escaped // "\t"
-      case(TOML_BACKSPACE); escaped = escaped // "\b"
+         short = "\n"
+      case("\"); short = "\\"
+      case('"'); short = '\"'
+      case(TOML_FORMFEED); short = "\f"
+      case(TOML_CARRIAGE_RETURN); short = "\r"
+      case(TOML_TABULATOR); short = "\t"
+      case(TOML_BACKSPACE); short = "\b"
       end select
+      escaped(k+1:k+2) = short
+      k = k + 2
    end do
-   escaped = escaped // '"'
+   escaped(n:n) = '"'
 
 end subroutine toml_escape_string
 
