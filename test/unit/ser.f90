@@ -45,7 +45,8 @@ subroutine collect_ser(testsuite)
       & new_unittest("ser-array", ser_array), &
       & new_unittest("ser-table", ser_table), &
       & new_unittest("ser-roundtrip-simple", ser_roundtrip_simple), &
-      & new_unittest("ser-real-round-trip", ser_real_round_trip)]
+      & new_unittest("ser-real-round-trip", ser_real_round_trip), &
+      & new_unittest("ser-control-characters", ser_control_characters)]
 
 end subroutine collect_ser
 
@@ -328,6 +329,76 @@ subroutine ser_real_round_trip(error)
       end if
    end do
 end subroutine ser_real_round_trip
+
+
+!> Every control character is written so that the text is TOML and reads back to the same
+!> byte, in a string value and in a key. Each backslash is achar(92).
+subroutine ser_control_characters(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: bs = achar(92), nl = new_line("a")
+   type(toml_table) :: table
+   type(toml_table), allocatable :: loaded, reread
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output, sval
+   character(16) :: key
+   integer :: codes(33), it, stat
+   integer(tfi) :: ival
+
+   codes = [(it, it = 0, 31), 127]
+   call new_table(table)
+   do it = 1, size(codes)
+      write(key, '("v", i0)') codes(it)
+      call set_value(table, trim(key), achar(codes(it)))
+      call set_value(table, achar(codes(it)), int(codes(it), tfi))
+   end do
+
+   call toml_dumps(table, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   call toml_loads(reread, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message)
+      return
+   end if
+
+   do it = 1, size(codes)
+      write(key, '("v", i0)') codes(it)
+      call get_value(reread, trim(key), sval, stat=stat)
+      call check(error, stat == 0 .and. sval == achar(codes(it)) .and. len(sval) == 1, &
+         & "a string holding byte "//trim(key(2:))//" must read back")
+      if (allocated(error)) return
+      call get_value(reread, achar(codes(it)), ival, stat=stat)
+      call check(error, stat == 0 .and. ival == codes(it), &
+         & "a key holding byte "//trim(key(2:))//" must read back")
+      if (allocated(error)) return
+   end do
+
+   ! Escapes read from a valid document must survive being written and read again
+   call toml_loads(loaded, 'x = "a'//bs//'u0001b"'//nl//'"k'//bs//'u0007" = 1'//nl, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Parse failed: "//toml_err%message)
+      return
+   end if
+   call toml_dumps(loaded, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   call toml_loads(reread, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message)
+      return
+   end if
+   call get_value(reread, "x", sval, stat=stat)
+   call check(error, stat == 0 .and. sval == "a"//achar(1)//"b", "x must read back as a, 01, b")
+   if (allocated(error)) return
+   call get_value(reread, "k"//achar(7), ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 1, "the key k, 07 must read back")
+end subroutine ser_control_characters
 
 
 end module tftest_ser

@@ -49,7 +49,8 @@ subroutine toml_escape_string(raw, escaped, multiline)
    !> Preserve newline characters
    logical, intent(in), optional :: multiline
 
-   integer :: i
+   character(*, tfc), parameter :: hexdigit = "0123456789ABCDEF"
+   integer :: i, code
    logical :: preserve_newline
 
    preserve_newline = .false.
@@ -59,6 +60,10 @@ subroutine toml_escape_string(raw, escaped, multiline)
    do i = 1, len(raw)
       select case(raw(i:i))
       case default; escaped = escaped // raw(i:i)
+      case(achar(0):achar(7), achar(11), achar(14):achar(31), achar(127))
+         ! TOML forbids these control characters unescaped, and has no short escape for them
+         code = iachar(raw(i:i))
+         escaped = escaped // "\u00" // hexdigit(code/16+1:code/16+1) // hexdigit(mod(code, 16)+1:mod(code, 16)+1)
       case("\"); escaped = escaped // "\\"
       case('"'); escaped = escaped // '\"'
       case(TOML_NEWLINE)
