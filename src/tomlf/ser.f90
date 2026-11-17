@@ -59,8 +59,11 @@ module tomlf_ser
    type, extends(toml_visitor) :: toml_serializer
       private
 
-      !> Output string
+      !> Output buffer, of which the first length characters are written
       character(:), allocatable :: output
+
+      !> Number of characters written to the output buffer
+      integer :: length = 0
 
       !> Configuration for serializer
       type(toml_ser_config) :: config
@@ -146,7 +149,7 @@ subroutine toml_dump_to_string(val, string, error, config)
 
    ser = toml_serializer(config=config)
    call val%accept(ser)
-   string = ser%output
+   string = ser%output(:ser%length)
 end subroutine toml_dump_to_string
 
 
@@ -221,6 +224,7 @@ subroutine new_serializer(self, config)
    type(toml_ser_config), intent(in), optional :: config
 
    self%output = ""
+   self%length = 0
    self%array_of_tables = .false.
    self%inline_array = .false.
    self%top = 0
@@ -305,11 +309,11 @@ subroutine visit_keyval(visitor, keyval)
    end select
 
    if (visitor%inline_array) then
-      visitor%output = visitor%output // " "
+      call append(visitor, " ")
    end if
-   visitor%output = visitor%output // key // " = " // str
+   call append(visitor, key // " = " // str)
    if (.not.visitor%inline_array) then
-      visitor%output = visitor%output // new_line("a")
+      call append(visitor, new_line("a"))
    end if
 
 end subroutine visit_keyval
@@ -333,7 +337,7 @@ recursive subroutine visit_array(visitor, array)
    logical, pointer :: lval
    integer :: i, n
 
-   if (visitor%inline_array) visitor%output = visitor%output // " ["
+   if (visitor%inline_array) call append(visitor, " [")
    n = len(array)
    do i = 1, n
       call array%get(i, ptr)
@@ -363,17 +367,17 @@ recursive subroutine visit_array(visitor, array)
          case default
          end select
 
-         visitor%output = visitor%output // " " // str
-         if (i /= n) visitor%output = visitor%output // ","
+         call append(visitor, " " // str)
+         if (i /= n) call append(visitor, ",")
       class is(toml_array)
          call ptr%accept(visitor)
-         if (i /= n) visitor%output = visitor%output // ","
+         if (i /= n) call append(visitor, ",")
       class is(toml_table)
          if (visitor%inline_array) then
-            visitor%output = visitor%output // " {"
+            call append(visitor, " {")
             call ptr%accept(visitor)
-            visitor%output = visitor%output // " }"
-            if (i /= n) visitor%output = visitor%output // ","
+            call append(visitor, " }")
+            if (i /= n) call append(visitor, ",")
          else
             visitor%array_of_tables = .true.
             if (size(visitor%stack, 1) <= visitor%top) call resize(visitor%stack)
@@ -386,7 +390,7 @@ recursive subroutine visit_array(visitor, array)
          end if
       end select
    end do
-   if (visitor%inline_array) visitor%output = visitor%output // " ]"
+   if (visitor%inline_array) call append(visitor, " ]")
 
 end subroutine visit_array
 
@@ -415,15 +419,15 @@ recursive subroutine visit_table(visitor, table)
       call resize(visitor%stack)
    else
       if (.not.(visitor%inline_array .or. table%implicit)) then
-         visitor%output = visitor%output // "["
-         if (visitor%array_of_tables) visitor%output = visitor%output // "["
+         call append(visitor, "[")
+         if (visitor%array_of_tables) call append(visitor, "[")
          do i = 1, visitor%top-1
-            visitor%output = visitor%output // visitor%stack(i)%key // "."
+            call append(visitor, visitor%stack(i)%key // ".")
          end do
-         visitor%output = visitor%output // visitor%stack(visitor%top)%key
-         visitor%output = visitor%output // "]"
-         if (visitor%array_of_tables) visitor%output = visitor%output // "]"
-         visitor%output = visitor%output // new_line("a")
+         call append(visitor, visitor%stack(visitor%top)%key)
+         call append(visitor, "]")
+         if (visitor%array_of_tables) call append(visitor, "]")
+         call append(visitor, new_line("a"))
          visitor%array_of_tables = .false.
       end if
    end if
@@ -435,14 +439,14 @@ recursive subroutine visit_table(visitor, table)
       class is(toml_keyval)
          call ptr%accept(visitor)
          if (visitor%inline_array) then
-            if (i /= n) visitor%output = visitor%output // ","
+            if (i /= n) call append(visitor, ",")
          end if
       class is(toml_array)
          if (visitor%inline_array) then
             call ptr%get_key(key)
-            visitor%output = visitor%output // " " // key // " ="
+            call append(visitor, " " // key // " =")
             call ptr%accept(visitor)
-            if (i /= n) visitor%output = visitor%output // ","
+            if (i /= n) call append(visitor, ",")
          else
             if (is_array_of_tables(ptr)) then
                ! Array of tables open a new section
@@ -451,10 +455,10 @@ recursive subroutine visit_table(visitor, table)
             else
                visitor%inline_array = .true.
                call ptr%get_key(key)
-               visitor%output = visitor%output // key // " ="
+               call append(visitor, key // " =")
                call ptr%accept(visitor)
                visitor%inline_array = .false.
-               visitor%output = visitor%output // new_line("a")
+               call append(visitor, new_line("a"))
             end if
          end if
       class is(toml_table)
@@ -462,10 +466,10 @@ recursive subroutine visit_table(visitor, table)
             ! Inside an inline array every entry is written in place, in index order:
             ! a subtable as an inline table under its own key
             call ptr%get_key(key)
-            visitor%output = visitor%output // " " // key // " = {"
+            call append(visitor, " " // key // " = {")
             call ptr%accept(visitor)
-            visitor%output = visitor%output // " }"
-            if (i /= n) visitor%output = visitor%output // ","
+            call append(visitor, " }")
+            if (i /= n) call append(visitor, ",")
          else
             ! Subtables open a new section
             ! -> cannot serialize them before all key-value pairs are done
@@ -481,24 +485,24 @@ recursive subroutine visit_table(visitor, table)
          class is(toml_keyval)
             call ptr%accept(visitor)
             if (visitor%inline_array) then
-               if (i /= n) visitor%output = visitor%output // ","
+               if (i /= n) call append(visitor, ",")
             end if
          class is(toml_array)
             if (visitor%inline_array) then
                call ptr%get_key(key)
-               visitor%output = visitor%output // " " // key // " ="
+               call append(visitor, " " // key // " =")
                call ptr%accept(visitor)
-               if (i /= n) visitor%output = visitor%output // ","
+               if (i /= n) call append(visitor, ",")
             else
                if (is_array_of_tables(ptr)) then
                   call ptr%accept(visitor)
                else
                   visitor%inline_array = .true.
                   call ptr%get_key(key)
-                  visitor%output = visitor%output // key // " ="
+                  call append(visitor, key // " =")
                   call ptr%accept(visitor)
                   visitor%inline_array = .false.
-                  visitor%output = visitor%output // new_line("a")
+                  call append(visitor, new_line("a"))
                end if
             end if
          class is(toml_table)
@@ -556,6 +560,37 @@ subroutine resize(stack, n)
    end if
 
 end subroutine resize
+
+
+!> Append text to the output, doubling the buffer's capacity when it is full: growing it
+!> by concatenation would copy everything written so far on every append
+subroutine append(visitor, text)
+
+   !> Instance of the TOML serializer
+   class(toml_serializer), intent(inout) :: visitor
+
+   !> Text to append
+   character(*), intent(in) :: text
+
+   character(:), allocatable :: tmp
+   integer :: capacity
+
+   if (.not.allocated(visitor%output)) then
+      allocate(character(0) :: visitor%output)
+      visitor%length = 0
+   end if
+
+   capacity = len(visitor%output)
+   if (visitor%length + len(text) > capacity) then
+      capacity = max(2*capacity, visitor%length + len(text), 1024)
+      allocate(character(capacity) :: tmp)
+      tmp(:visitor%length) = visitor%output(:visitor%length)
+      call move_alloc(tmp, visitor%output)
+   end if
+
+   visitor%output(visitor%length+1:visitor%length+len(text)) = text
+   visitor%length = visitor%length + len(text)
+end subroutine append
 
 
 end module tomlf_ser
