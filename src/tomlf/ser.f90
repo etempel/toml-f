@@ -458,9 +458,19 @@ recursive subroutine visit_table(visitor, table)
             end if
          end if
       class is(toml_table)
-         ! Subtables open a new section
-         ! -> cannot serialize them before all key-value pairs are done
-         defer(i) = .true.
+         if (visitor%inline_array) then
+            ! Inside an inline array every entry is written in place, in index order:
+            ! a subtable as an inline table under its own key
+            call ptr%get_key(key)
+            visitor%output = visitor%output // " " // key // " = {"
+            call ptr%accept(visitor)
+            visitor%output = visitor%output // " }"
+            if (i /= n) visitor%output = visitor%output // ","
+         else
+            ! Subtables open a new section
+            ! -> cannot serialize them before all key-value pairs are done
+            defer(i) = .true.
+         end if
       end select
    end do
 

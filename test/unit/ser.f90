@@ -21,7 +21,7 @@ module tftest_ser
    use tomlf_de, only : toml_parse, toml_loads
    use tomlf_error, only : toml_error
    use tomlf_ser, only : toml_dumps
-   use tomlf_type, only : toml_table, toml_array, new_table, add_table, add_array
+   use tomlf_type, only : toml_table, toml_array, new_table, add_table, add_array, len
    implicit none
    private
 
@@ -46,7 +46,8 @@ subroutine collect_ser(testsuite)
       & new_unittest("ser-table", ser_table), &
       & new_unittest("ser-roundtrip-simple", ser_roundtrip_simple), &
       & new_unittest("ser-real-round-trip", ser_real_round_trip), &
-      & new_unittest("ser-control-characters", ser_control_characters)]
+      & new_unittest("ser-control-characters", ser_control_characters), &
+      & new_unittest("ser-inline-nested-table", ser_inline_nested_table)]
 
 end subroutine collect_ser
 
@@ -399,6 +400,125 @@ subroutine ser_control_characters(error)
    call get_value(reread, "k"//achar(7), ival, stat=stat)
    call check(error, stat == 0 .and. ival == 1, "the key k, 07 must read back")
 end subroutine ser_control_characters
+
+
+!> Loads text, writes it and loads the written text
+subroutine round_trip(error, text, reread)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+   !> TOML text
+   character(*), intent(in) :: text
+   !> The document as read back from the written text
+   type(toml_table), allocatable, intent(out) :: reread
+
+   type(toml_table), allocatable :: loaded
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output
+
+   call toml_loads(loaded, text, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Parse failed: "//toml_err%message)
+      return
+   end if
+   call toml_dumps(loaded, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   call toml_loads(reread, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message//new_line("a")//output)
+      return
+   end if
+end subroutine round_trip
+
+
+!> A table nested in an inline table inside an array keeps its key
+subroutine ser_inline_nested_table(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   type(toml_table), allocatable :: doc
+   type(toml_array), pointer :: arr, inner
+   type(toml_table), pointer :: elem, sub, subsub
+   character(:), allocatable :: sval
+   integer(tfi) :: ival
+   integer :: stat
+
+   ! arr = ["str", {a.b = 1}]
+   call round_trip(error, 'arr = ["str", {a.b = 1}]', doc)
+   if (allocated(error)) return
+   call get_value(doc, "arr", arr, requested=.false.)
+   call check(error, associated(arr), "arr must be an array")
+   if (allocated(error)) return
+   call check(error, len(arr) == 2, "arr must hold two elements")
+   if (allocated(error)) return
+   call get_value(arr, 1, sval, stat=stat)
+   call check(error, stat == 0 .and. sval == "str", "arr[1] must read str")
+   if (allocated(error)) return
+   call get_value(arr, 2, elem)
+   call check(error, associated(elem), "arr[2] must be a table")
+   if (allocated(error)) return
+   call check(error, .not.elem%has_key("b"), "b must not lose its parent key a")
+   if (allocated(error)) return
+   call get_value(elem, "a", sub, requested=.false.)
+   call check(error, associated(sub), "arr[2].a must be a table")
+   if (allocated(error)) return
+   call get_value(sub, "b", ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 1, "arr[2].a.b must read 1")
+   if (allocated(error)) return
+
+   ! arr = [1, {x = {y = {z = 2}}, w = 3}]
+   call round_trip(error, 'arr = [1, {x = {y = {z = 2}}, w = 3}]', doc)
+   if (allocated(error)) return
+   call get_value(doc, "arr", arr, requested=.false.)
+   call check(error, associated(arr), "arr must be an array")
+   if (allocated(error)) return
+   call check(error, len(arr) == 2, "arr must hold two elements")
+   if (allocated(error)) return
+   call get_value(arr, 1, ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 1, "arr[1] must read 1")
+   if (allocated(error)) return
+   call get_value(arr, 2, elem)
+   call check(error, associated(elem), "arr[2] must be a table")
+   if (allocated(error)) return
+   call get_value(elem, "w", ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 3, "arr[2].w must read 3")
+   if (allocated(error)) return
+   call get_value(elem, "x", sub, requested=.false.)
+   call check(error, associated(sub), "arr[2].x must be a table")
+   if (allocated(error)) return
+   call get_value(sub, "y", subsub, requested=.false.)
+   call check(error, associated(subsub), "arr[2].x.y must be a table")
+   if (allocated(error)) return
+   call get_value(subsub, "z", ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 2, "arr[2].x.y.z must read 2")
+   if (allocated(error)) return
+
+   ! arr = [[{a = {b = 1}}]]
+   call round_trip(error, 'arr = [[{a = {b = 1}}]]', doc)
+   if (allocated(error)) return
+   call get_value(doc, "arr", arr, requested=.false.)
+   call check(error, associated(arr), "arr must be an array")
+   if (allocated(error)) return
+   call check(error, len(arr) == 1, "arr must hold one element")
+   if (allocated(error)) return
+   call get_value(arr, 1, inner)
+   call check(error, associated(inner), "arr[1] must be an array")
+   if (allocated(error)) return
+   call check(error, len(inner) == 1, "arr[1] must hold one element")
+   if (allocated(error)) return
+   call get_value(inner, 1, elem)
+   call check(error, associated(elem), "arr[1][1] must be a table")
+   if (allocated(error)) return
+   call check(error, .not.elem%has_key("b"), "b must not lose its parent key a")
+   if (allocated(error)) return
+   call get_value(elem, "a", sub, requested=.false.)
+   call check(error, associated(sub), "arr[1][1].a must be a table")
+   if (allocated(error)) return
+   call get_value(sub, "b", ival, stat=stat)
+   call check(error, stat == 0 .and. ival == 1, "arr[1][1].a.b must read 1")
+end subroutine ser_inline_nested_table
 
 
 end module tftest_ser
