@@ -22,13 +22,17 @@
 !>
 !> The [[toml_serializer]] type implements the visitor pattern and can be
 !> used directly for custom serialization workflows.
+!>
+!> A TOML document is UTF-8. A key or string that is not valid UTF-8 is refused:
+!> [[toml_dumps]] and [[toml_dump]] return an error with `stat` set to
+!> `toml_stat%invalid_utf8`, naming the key's dotted path, and write nothing.
 module tomlf_ser
    use tomlf_constants, only : tfc, tfi, tfr, tfout, toml_type
    use tomlf_datetime, only : toml_datetime, to_string
    use tomlf_error, only : toml_error, toml_stat, make_error
    use tomlf_type, only : toml_value, toml_visitor, toml_key, toml_table, &
       & toml_array, toml_keyval, is_array_of_tables, len
-   use tomlf_utils, only : to_string, toml_escape_string
+   use tomlf_utils, only : to_string, toml_escape_string, valid_utf8, show_invalid_utf8
    implicit none
    private
 
@@ -77,8 +81,12 @@ module tomlf_ser
       !> Top of the key stack
       integer, private :: top
 
-      !> Key stack to create table headers
+      !> Key stack to create table headers, and to name the place of an error
       type(toml_key), allocatable, private :: stack(:)
+
+      !> First error met while rendering, with stat toml_stat%invalid_utf8 for a key or
+      !> string that is not valid UTF-8; the text rendered is then not TOML
+      type(toml_error), allocatable, public :: error
 
    contains
 
@@ -130,7 +138,10 @@ function toml_serialize(val, config) result(string)
 end function toml_serialize
 
 
-!> Create a string representing the JSON value
+!> Create a string representing the TOML value.
+!>
+!> A key or string that is not valid UTF-8 gives an error with stat `toml_stat%invalid_utf8`,
+!> naming the key's dotted path, and an empty string.
 subroutine toml_dump_to_string(val, string, error, config)
 
    !> TOML value to visit
@@ -149,6 +160,11 @@ subroutine toml_dump_to_string(val, string, error, config)
 
    ser = toml_serializer(config=config)
    call val%accept(ser)
+   if (allocated(ser%error)) then
+      call move_alloc(ser%error, error)
+      string = ""
+      return
+   end if
    string = ser%output(:ser%length)
 end subroutine toml_dump_to_string
 
@@ -182,7 +198,11 @@ subroutine toml_dump_to_unit(val, io, error, config)
 end subroutine toml_dump_to_unit
 
 
-!> Write string representation of JSON value to a file
+!> Write string representation of TOML value to a file.
+!>
+!> The value is rendered before the file is opened: on an error in rendering, such as a key
+!> or string that is not valid UTF-8, an existing file is left as it was and no new one is
+!> created.
 subroutine toml_dump_to_file(val, filename, error, config)
 
    !> TOML value to visit
@@ -197,18 +217,29 @@ subroutine toml_dump_to_file(val, filename, error, config)
    !> Configuration for serializer
    type(toml_ser_config), intent(in), optional :: config
 
+   character(len=:), allocatable :: string
    integer :: io
    integer :: stat
    character(512) :: msg
+
+   ! Render before touching the file: a document that cannot be rendered leaves an existing
+   ! file as it was and creates no new one
+   call toml_dumps(val, string, error, config=config)
+   if (allocated(error)) return
 
    open(file=filename, newunit=io, iostat=stat, iomsg=msg)
    if (stat /= 0) then
       call make_error(error, trim(msg))
       return
    end if
-   call toml_dump(val, io, error, config=config)
+   write(io, "(a)", iostat=stat, iomsg=msg) string
+   if (stat /= 0) then
+      call make_error(error, trim(msg))
+      close(unit=io, iostat=stat)
+      return
+   end if
    close(unit=io, iostat=stat, iomsg=msg)
-   if (.not.allocated(error) .and. stat /= 0) then
+   if (stat /= 0) then
       call make_error(error, trim(msg))
    end if
 end subroutine toml_dump_to_file
@@ -255,6 +286,9 @@ recursive subroutine visit(self, val)
    !> TOML value to visit
    class(toml_value), intent(inout) :: val
 
+   ! After the first error the output is discarded: render nothing more
+   if (allocated(self%error)) return
+
    select type(val)
    class is(toml_keyval)
       call visit_keyval(self, val)
@@ -283,11 +317,13 @@ subroutine visit_keyval(visitor, keyval)
    real(tfr), pointer :: rval
    logical, pointer :: lval
 
+   call check_key(visitor, keyval)
    call keyval%get_key(key)
 
    select case(keyval%get_type())
    case(toml_type%string)
       call keyval%get(sval)
+      call check_utf8(visitor, sval, keyval)
       call toml_escape_string(sval, str)
    case(toml_type%int)
       call keyval%get(ival)
@@ -347,6 +383,7 @@ recursive subroutine visit_array(visitor, array)
          select case(ptr%get_type())
          case(toml_type%string)
             call ptr%get(sval)
+            call check_utf8(visitor, sval, ptr)
             call toml_escape_string(sval, str)
          case(toml_type%int)
             call ptr%get(ival)
@@ -380,13 +417,9 @@ recursive subroutine visit_array(visitor, array)
             if (i /= n) call append(visitor, ",")
          else
             visitor%array_of_tables = .true.
-            if (size(visitor%stack, 1) <= visitor%top) call resize(visitor%stack)
-            visitor%top = visitor%top + 1
-            call array%get_key(key)
-            visitor%stack(visitor%top)%key = key
+            call push_key(visitor, array, key)
             call ptr%accept(visitor)
-            deallocate(visitor%stack(visitor%top)%key)
-            visitor%top = visitor%top - 1
+            call pop_key(visitor)
          end if
       end select
    end do
@@ -443,9 +476,10 @@ recursive subroutine visit_table(visitor, table)
          end if
       class is(toml_array)
          if (visitor%inline_array) then
-            call ptr%get_key(key)
+            call push_key(visitor, ptr, key)
             call append(visitor, " " // key // " =")
             call ptr%accept(visitor)
+            call pop_key(visitor)
             if (i /= n) call append(visitor, ",")
          else
             if (is_array_of_tables(ptr)) then
@@ -453,11 +487,12 @@ recursive subroutine visit_table(visitor, table)
                ! -> cannot serialize them before all key-value pairs are done
                defer(i) = .true.
             else
+               call push_key(visitor, ptr, key)
                visitor%inline_array = .true.
-               call ptr%get_key(key)
                call append(visitor, key // " =")
                call ptr%accept(visitor)
                visitor%inline_array = .false.
+               call pop_key(visitor)
                call append(visitor, new_line("a"))
             end if
          end if
@@ -465,10 +500,11 @@ recursive subroutine visit_table(visitor, table)
          if (visitor%inline_array) then
             ! Inside an inline array every entry is written in place, in index order:
             ! a subtable as an inline table under its own key
-            call ptr%get_key(key)
+            call push_key(visitor, ptr, key)
             call append(visitor, " " // key // " = {")
             call ptr%accept(visitor)
             call append(visitor, " }")
+            call pop_key(visitor)
             if (i /= n) call append(visitor, ",")
          else
             ! Subtables open a new section
@@ -489,30 +525,28 @@ recursive subroutine visit_table(visitor, table)
             end if
          class is(toml_array)
             if (visitor%inline_array) then
-               call ptr%get_key(key)
+               call push_key(visitor, ptr, key)
                call append(visitor, " " // key // " =")
                call ptr%accept(visitor)
+               call pop_key(visitor)
                if (i /= n) call append(visitor, ",")
             else
                if (is_array_of_tables(ptr)) then
                   call ptr%accept(visitor)
                else
+                  call push_key(visitor, ptr, key)
                   visitor%inline_array = .true.
-                  call ptr%get_key(key)
                   call append(visitor, key // " =")
                   call ptr%accept(visitor)
                   visitor%inline_array = .false.
+                  call pop_key(visitor)
                   call append(visitor, new_line("a"))
                end if
             end if
          class is(toml_table)
-            if (size(visitor%stack, 1) <= visitor%top) call resize(visitor%stack)
-            visitor%top = visitor%top + 1
-            call ptr%get_key(key)
-            visitor%stack(visitor%top)%key = key
+            call push_key(visitor, ptr, key)
             call ptr%accept(visitor)
-            deallocate(visitor%stack(visitor%top)%key)
-            visitor%top = visitor%top - 1
+            call pop_key(visitor)
          end select
       end if
    end do
@@ -522,6 +556,96 @@ recursive subroutine visit_table(visitor, table)
    end if
 
 end subroutine visit_table
+
+
+!> Put the key of a value on the key stack, after checking that it is valid UTF-8
+subroutine push_key(visitor, val, key)
+
+   !> Instance of the TOML serializer
+   class(toml_serializer), intent(inout) :: visitor
+
+   !> TOML value whose key goes on the stack
+   class(toml_value), intent(in) :: val
+
+   !> The key as it is written, bare or quoted
+   character(kind=tfc, len=:), allocatable, intent(out) :: key
+
+   call check_key(visitor, val)
+   call val%get_key(key)
+   if (.not.allocated(key)) key = ""
+   if (.not.allocated(visitor%stack)) call resize(visitor%stack)
+   if (size(visitor%stack, 1) <= visitor%top) call resize(visitor%stack)
+   visitor%top = visitor%top + 1
+   visitor%stack(visitor%top)%key = key
+
+end subroutine push_key
+
+
+!> Take the last key off the key stack
+subroutine pop_key(visitor)
+
+   !> Instance of the TOML serializer
+   class(toml_serializer), intent(inout) :: visitor
+
+   deallocate(visitor%stack(visitor%top)%key)
+   visitor%top = visitor%top - 1
+
+end subroutine pop_key
+
+
+!> Check that the key of a value is valid UTF-8
+subroutine check_key(visitor, val)
+
+   !> Instance of the TOML serializer
+   class(toml_serializer), intent(inout) :: visitor
+
+   !> TOML value whose key is checked
+   class(toml_value), intent(in) :: val
+
+   if (allocated(val%key)) call check_utf8(visitor, val%key, val)
+
+end subroutine check_key
+
+
+!> Check that text, the key or a string of a value, is valid UTF-8. On the first failure,
+!> and only the first, record an error naming the place: the keys on the stack, then the
+!> value's own key if it has one, each byte outside a character shown as \xHH.
+subroutine check_utf8(visitor, text, val)
+
+   !> Instance of the TOML serializer
+   class(toml_serializer), intent(inout) :: visitor
+
+   !> Raw text to check
+   character(kind=tfc, len=*), intent(in) :: text
+
+   !> TOML value the text belongs to
+   class(toml_value), intent(in) :: val
+
+   character(kind=tfc, len=:), allocatable :: path, key
+   integer :: i
+
+   if (allocated(visitor%error)) return
+   if (valid_utf8(text)) return
+
+   path = ""
+   do i = 1, visitor%top
+      if (i > 1) path = path // "."
+      path = path // visitor%stack(i)%key
+   end do
+   call val%get_key(key)
+   if (allocated(key)) then
+      if (len(path) > 0) path = path // "."
+      path = path // show_invalid_utf8(key)
+   end if
+
+   if (len(path) > 0) then
+      call make_error(visitor%error, "Key or string is not valid UTF-8: " // path, &
+         & toml_stat%invalid_utf8)
+   else
+      call make_error(visitor%error, "Key or string is not valid UTF-8", toml_stat%invalid_utf8)
+   end if
+
+end subroutine check_utf8
 
 
 !> Change size of the stack

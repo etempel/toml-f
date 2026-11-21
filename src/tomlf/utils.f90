@@ -21,6 +21,7 @@ module tomlf_utils
    private
 
    public :: toml_escape_string
+   public :: valid_utf8, show_invalid_utf8
    public :: to_string
    public :: read_whole_file, read_whole_line
 
@@ -108,6 +109,162 @@ subroutine toml_escape_string(raw, escaped, multiline)
    escaped(n:n) = '"'
 
 end subroutine toml_escape_string
+
+
+!> Whether text is well-formed UTF-8 (RFC 3629): no overlong form, no surrogate, nothing
+!> above U+10FFFF. The lexer and the serialiser both use it, so that the reader and the
+!> writer accept exactly the same text.
+pure function valid_utf8(text) result(valid)
+
+   !> Bytes to check
+   character(*, tfc), intent(in) :: text
+
+   !> Whether every byte sequence is a valid UTF-8 encoding of a scalar value
+   logical :: valid
+
+   integer :: it, nchar
+
+   valid = .true.
+   it = 1
+   do while(it <= len(text))
+      ! Most text is ASCII: take it a byte at a time without the full decoding
+      if (byte_value(text(it:it)) < 128) then
+         it = it + 1
+         cycle
+      end if
+      nchar = utf8_char_len(text, it)
+      if (nchar == 0) then
+         valid = .false.
+         return
+      end if
+      it = it + nchar
+   end do
+
+end function valid_utf8
+
+
+!> Text with each byte that is not part of a valid UTF-8 character written as \xHH (hex
+!> digits in upper case), and every valid character as it is, for an error message
+pure function show_invalid_utf8(text) result(shown)
+
+   !> Bytes to show
+   character(*, tfc), intent(in) :: text
+
+   !> Text to show
+   character(kind=tfc, len=:), allocatable :: shown
+
+   character(*, tfc), parameter :: hexdigit = "0123456789ABCDEF"
+   integer :: it, k, n, nchar, b
+
+   ! Size the result in one pass and fill it in a second
+   n = 0
+   it = 1
+   do while(it <= len(text))
+      nchar = utf8_char_len(text, it)
+      if (nchar == 0) then
+         n = n + 4
+         it = it + 1
+      else
+         n = n + nchar
+         it = it + nchar
+      end if
+   end do
+
+   allocate(character(kind=tfc, len=n) :: shown)
+   k = 0
+   it = 1
+   do while(it <= len(text))
+      nchar = utf8_char_len(text, it)
+      if (nchar == 0) then
+         b = byte_value(text(it:it))
+         shown(k+1:k+4) = "\x" // hexdigit(b/16+1:b/16+1) // hexdigit(mod(b, 16)+1:mod(b, 16)+1)
+         k = k + 4
+         it = it + 1
+      else
+         shown(k+1:k+nchar) = text(it:it+nchar-1)
+         k = k + nchar
+         it = it + nchar
+      end if
+   end do
+
+end function show_invalid_utf8
+
+
+!> Length in bytes of the valid UTF-8 character starting at position pos of text, or 0 when
+!> the bytes there are not one: no overlong form, no surrogate, nothing above U+10FFFF
+pure function utf8_char_len(text, pos) result(nchar)
+
+   !> Bytes holding the character
+   character(*, tfc), intent(in) :: text
+
+   !> Position of the character's first byte, 1 to len(text)
+   integer, intent(in) :: pos
+
+   !> Length of the character, 1 to 4, or 0 when it is not valid
+   integer :: nchar
+
+   integer :: b, ncont, lo, hi, k
+
+   nchar = 0
+   b = byte_value(text(pos:pos))
+   ! Range of the first continuation byte; every later one is 80 to BF
+   lo = 128
+   hi = 191
+   select case(b)
+   case(0:127)
+      nchar = 1
+      return
+   case(194:223)
+      ncont = 1
+   case(224)
+      ! No overlong three-byte form
+      ncont = 2
+      lo = 160
+   case(225:236, 238:239)
+      ncont = 2
+   case(237)
+      ! No surrogate, D800 to DFFF
+      ncont = 2
+      hi = 159
+   case(240)
+      ! No overlong four-byte form
+      ncont = 3
+      lo = 144
+   case(241:243)
+      ncont = 3
+   case(244)
+      ! Nothing above 10FFFF
+      ncont = 3
+      hi = 143
+   case default
+      ! A continuation byte alone, an overlong two-byte form (C0, C1), or F5 to FF
+      return
+   end select
+   if (pos + ncont > len(text)) return
+   do k = 1, ncont
+      b = byte_value(text(pos+k:pos+k))
+      if (b < lo .or. b > hi) return
+      lo = 128
+      hi = 191
+   end do
+   nchar = ncont + 1
+
+end function utf8_char_len
+
+
+!> The byte a character holds, 0 to 255 (ichar may answer a negative number above 127)
+elemental function byte_value(ch) result(b)
+
+   !> One character
+   character(1, tfc), intent(in) :: ch
+
+   !> Its byte, 0 to 255
+   integer :: b
+
+   b = ichar(ch)
+   if (b < 0) b = b + 256
+
+end function byte_value
 
 
 !> Represent an integer as character sequence.

@@ -64,6 +64,9 @@ module tomlf_error
       !> Key not present in table
       integer :: missing_key = -5
 
+      !> A key or string is not valid UTF-8
+      integer :: invalid_utf8 = -6
+
    end type enum_stat
 
    !> Actual enumerator for return states
@@ -76,6 +79,7 @@ module tomlf_error
    !> | `type_mismatch` | Incorrect type when reading a value |
    !> | `conversion_error` | Error when converting or downcasting a value |
    !> | `missing_key` | Requested key not present in table |
+   !> | `invalid_utf8` | A key or string is not valid UTF-8 |
    type(enum_stat), parameter :: toml_stat = enum_stat()
 
 

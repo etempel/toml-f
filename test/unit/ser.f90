@@ -21,8 +21,9 @@ module tftest_ser
    use tomlf_constants, only : tfi, tfr, tf_sp
    use tomlf_datetime, only : toml_datetime, toml_date, toml_time
    use tomlf_de, only : toml_parse, toml_loads
-   use tomlf_error, only : toml_error
-   use tomlf_ser, only : toml_dumps
+   use tomlf_error, only : toml_error, toml_stat
+   use tomlf_ser, only : toml_dumps, toml_dump
+   use tomlf_utils, only : read_whole_file
    use tomlf_type, only : toml_table, toml_array, new_table, add_table, add_array, len
    implicit none
    private
@@ -50,7 +51,9 @@ subroutine collect_ser(testsuite)
       & new_unittest("ser-real-round-trip", ser_real_round_trip), &
       & new_unittest("ser-control-characters", ser_control_characters), &
       & new_unittest("ser-inline-nested-table", ser_inline_nested_table), &
-      & new_unittest("ser-nan-quiet", ser_nan_quiet)]
+      & new_unittest("ser-nan-quiet", ser_nan_quiet), &
+      & new_unittest("ser-invalid-utf8", ser_invalid_utf8), &
+      & new_unittest("ser-invalid-utf8-file", ser_invalid_utf8_file)]
 
 end subroutine collect_ser
 
@@ -558,6 +561,282 @@ subroutine ser_nan_quiet(error)
    if (allocated(error)) return
    call check(error, index(output, "nan") > 0, "a NaN must be written as nan")
 end subroutine ser_nan_quiet
+
+
+!> A key or string that is not valid UTF-8 is refused, with stat invalid_utf8, a message
+!> naming its place and an empty string back; the nearest valid text is written as it is
+subroutine ser_invalid_utf8(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: nl = new_line("a"), bs = achar(92)
+   type(toml_table) :: table
+   type(toml_table), pointer :: sub, subsub
+   type(toml_array), pointer :: arr
+   type(toml_table), allocatable :: reread
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output, sval, bad(:), good(:)
+   character(32) :: label
+   integer(tfi) :: ival
+   integer :: it, stat
+
+   ! A string value with byte E9 (Latin-1 e acute)
+   call new_table(table)
+   call set_value(table, "k", "a"//achar(233))
+   call check_refused(error, table, "k", "a string value with byte E9")
+   if (allocated(error)) return
+
+   ! A quoted key with byte E9, in a table nested two deep
+   call new_table(table)
+   call add_table(table, "a", sub)
+   call add_table(sub, "b", subsub)
+   call set_value(subsub, "k"//achar(233), 1_tfi)
+   call check_refused(error, table, 'a.b."k'//bs//'xE9"', "a quoted key with byte E9")
+   if (allocated(error)) return
+
+   ! A string inside an inline array
+   call new_table(table)
+   call add_array(table, "arr", arr)
+   call set_value(arr, 1, "ok")
+   call set_value(arr, 2, "x"//achar(233))
+   call check_refused(error, table, "arr", "a string inside an inline array")
+   if (allocated(error)) return
+
+   ! A string inside an inline table inside an inline array
+   call new_table(table)
+   call add_array(table, "arr", arr)
+   call set_value(arr, 1, 1_tfi)
+   call add_table(arr, sub)
+   call set_value(sub, "x", "x"//achar(233))
+   call check_refused(error, table, "arr.x", "a string inside an inline table in an array")
+   if (allocated(error)) return
+
+   ! A string in a table nested two deep
+   call new_table(table)
+   call add_table(table, "a", sub)
+   call add_table(sub, "b", subsub)
+   call set_value(subsub, "s", "x"//achar(233))
+   call check_refused(error, table, "a.b.s", "a string in a table nested two deep")
+   if (allocated(error)) return
+
+   ! A string in an [[entry]]
+   call new_table(table)
+   call add_array(table, "entry", arr)
+   call add_table(arr, sub)
+   call set_value(sub, "s", "fine")
+   call add_table(arr, sub)
+   call set_value(sub, "s", "x"//achar(233))
+   call check_refused(error, table, "entry.s", "a string in an array of tables")
+   if (allocated(error)) return
+
+   ! Each kind of bad sequence, as a string value and as a key
+   bad = [character(4) :: &
+      & achar(192)//achar(128), &                         ! overlong, two bytes
+      & achar(224)//achar(159)//achar(191), &             ! overlong, three bytes
+      & achar(240)//achar(143)//achar(191)//achar(191), & ! overlong, four bytes
+      & achar(237)//achar(160)//achar(128), &             ! surrogate D800
+      & achar(244)//achar(144)//achar(128)//achar(128), & ! past 10FFFF
+      & achar(226)//achar(130), &                         ! cut short
+      & achar(128)]                                       ! continuation byte alone
+   do it = 1, size(bad)
+      write(label, '("bad sequence ", i0, " in a value")') it
+      call new_table(table)
+      call set_value(table, "s", "<"//trim(bad(it))//">")
+      call check_refused(error, table, "s", trim(label))
+      if (allocated(error)) return
+      write(label, '("bad sequence ", i0, " in a key")') it
+      call new_table(table)
+      call set_value(table, "<"//trim(bad(it))//">", 1_tfi)
+      call check_refused(error, table, '"<', trim(label))
+      if (allocated(error)) return
+   end do
+
+   ! The control: the nearest valid sequences are written as they are and read back
+   good = [character(4) :: &
+      & achar(194)//achar(128), &                         ! U+0080
+      & achar(224)//achar(160)//achar(128), &             ! U+0800
+      & achar(240)//achar(144)//achar(128)//achar(128), & ! U+10000
+      & achar(237)//achar(159)//achar(191), &             ! U+D7FF
+      & achar(244)//achar(143)//achar(191)//achar(191), & ! U+10FFFF
+      & achar(226)//achar(130)//achar(172), &             ! U+20AC, euro sign
+      & achar(195)//achar(169), &                         ! e acute
+      & achar(240)//achar(159)//achar(152)//achar(128)]   ! U+1F600, a grinning face
+   call new_table(table)
+   do it = 1, size(good)
+      write(label, '("v", i0)') it
+      call set_value(table, trim(label), "<"//trim(good(it))//">")
+      call set_value(table, "<"//trim(good(it))//">", int(it, tfi))
+   end do
+   call toml_dumps(table, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Serialize failed: "//toml_err%message)
+      return
+   end if
+   do it = 1, size(good)
+      write(label, '("v", i0)') it
+      call check(error, index(output, trim(label)//' = "<'//trim(good(it))//'>"'//nl) > 0, &
+         & "valid sequence "//trim(label(2:))//" must be written as it is in a value")
+      if (allocated(error)) return
+      write(label, '(i0)') it
+      call check(error, index(output, '"<'//trim(good(it))//'>" = '//trim(label)//nl) > 0, &
+         & "valid sequence "//trim(label)//" must be written as it is in a key")
+      if (allocated(error)) return
+   end do
+   call toml_loads(reread, output, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message)
+      return
+   end if
+   do it = 1, size(good)
+      write(label, '("v", i0)') it
+      call get_value(reread, trim(label), sval, stat=stat)
+      call check(error, stat == 0 .and. sval == "<"//trim(good(it))//">", &
+         & "valid sequence "//trim(label(2:))//" must read back in a value")
+      if (allocated(error)) return
+      call get_value(reread, "<"//trim(good(it))//">", ival, stat=stat)
+      call check(error, stat == 0 .and. ival == it, &
+         & "valid sequence "//trim(label(2:))//" must read back in a key")
+      if (allocated(error)) return
+   end do
+end subroutine ser_invalid_utf8
+
+
+!> toml_dumps refuses the table with stat invalid_utf8, a message holding path and an
+!> empty string
+subroutine check_refused(error, table, path, label)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+   !> Table to render
+   type(toml_table), intent(inout) :: table
+   !> Text the message must hold
+   character(*), intent(in) :: path
+   !> What is refused, for the failure message
+   character(*), intent(in) :: label
+
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: output
+
+   call toml_dumps(table, output, error=toml_err)
+   if (.not.allocated(toml_err)) then
+      call test_failed(error, label//" must be refused")
+      return
+   end if
+   call check(error, toml_err%stat == toml_stat%invalid_utf8, &
+      & label//" must be refused with stat invalid_utf8")
+   if (allocated(error)) return
+   call check(error, index(toml_err%message, "not valid UTF-8") > 0 &
+      & .and. index(toml_err%message, path) > 0, &
+      & label//": the message must name "//path//", got: "//toml_err%message)
+   if (allocated(error)) return
+   call check(error, allocated(output), label//": the string must be allocated")
+   if (allocated(error)) return
+   call check(error, len(output) == 0, label//": the string must be empty")
+end subroutine check_refused
+
+
+!> toml_dump of a refused table to a file leaves an existing file as it was and creates no
+!> new one; a valid table is written
+subroutine ser_invalid_utf8_file(error)
+   !> Error handling
+   type(error_type), allocatable, intent(out) :: error
+
+   character(*), parameter :: before = "keep = 1"//new_line("a")
+   type(toml_table) :: bad, good
+   type(toml_table), allocatable :: reread
+   type(toml_error), allocatable :: toml_err
+   character(:), allocatable :: filename, content
+   character(:), allocatable :: sval
+   integer :: io, stat
+   logical :: exists
+
+   call new_table(bad)
+   call set_value(bad, "s", "x"//achar(233))
+   call new_table(good)
+   call set_value(good, "s", "x"//achar(195)//achar(169))
+
+   ! An existing file stays byte for byte as it was
+   filename = file_name("old")
+   open(file=filename, newunit=io, access="stream", form="unformatted", status="replace")
+   write(io) before
+   close(io)
+   call toml_dump(bad, filename, toml_err)
+   call read_whole_file(filename, content, stat)
+   call remove_file(filename)
+   call check(error, allocated(toml_err), "the refused table must give an error")
+   if (allocated(error)) return
+   call check(error, toml_err%stat == toml_stat%invalid_utf8, "the error must be invalid_utf8")
+   if (allocated(error)) return
+   call check(error, stat == 0, "the existing file must still be readable")
+   if (allocated(error)) return
+   call check(error, content == before .and. len(content) == len(before), &
+      & "the existing file must be left as it was")
+   if (allocated(error)) return
+
+   ! A new path stays absent
+   filename = file_name("new")
+   call remove_file(filename)
+   call toml_dump(bad, filename, toml_err)
+   inquire(file=filename, exist=exists)
+   if (exists) call remove_file(filename)
+   call check(error, allocated(toml_err), "the refused table must give an error")
+   if (allocated(error)) return
+   call check(error, .not.exists, "a refused table must create no file")
+   if (allocated(error)) return
+
+   ! The control: a valid table is written
+   call toml_dump(good, filename, toml_err)
+   inquire(file=filename, exist=exists)
+   if (allocated(toml_err)) then
+      if (exists) call remove_file(filename)
+      call test_failed(error, "Dump failed: "//toml_err%message)
+      return
+   end if
+   call check(error, exists, "a valid table must be written")
+   if (allocated(error)) return
+   call read_whole_file(filename, content, stat)
+   call remove_file(filename)
+   call check(error, stat == 0, "the written file must be readable")
+   if (allocated(error)) return
+   call toml_loads(reread, content, error=toml_err)
+   if (allocated(toml_err)) then
+      call test_failed(error, "Re-parse failed: "//toml_err%message)
+      return
+   end if
+   call get_value(reread, "s", sval, stat=stat)
+   call check(error, stat == 0 .and. sval == "x"//achar(195)//achar(169), &
+      & "the written file must read back")
+end subroutine ser_invalid_utf8_file
+
+
+!> A file name for this test, unlikely to clash with one of another run
+function file_name(tag) result(filename)
+   !> Part of the name
+   character(*), intent(in) :: tag
+   !> File name
+   character(:), allocatable :: filename
+
+   character(8) :: hex
+   real :: val
+
+   call random_number(val)
+   write(hex, "(z8.8)") int(val*1.0e9)
+   filename = "toml-f-ser-utf8-"//tag//"-"//hex//".toml"
+end function file_name
+
+
+!> Delete a file if it exists
+subroutine remove_file(filename)
+   !> File name
+   character(*), intent(in) :: filename
+
+   integer :: io, stat
+   logical :: exists
+
+   inquire(file=filename, exist=exists)
+   if (.not.exists) return
+   open(file=filename, newunit=io, iostat=stat)
+   if (stat == 0) close(io, status="delete", iostat=stat)
+end subroutine remove_file
 
 
 end module tftest_ser
